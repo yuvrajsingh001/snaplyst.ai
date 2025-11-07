@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "prepare": "husky install ../.git/hooks"
+    "prepare": "node -e \"if (process.env.CI || process.env.VERCEL) { process.exit(0) } else { try { require('husky').install('../.git/hooks') } catch(e) { process.exit(0) } }\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.80.0",
