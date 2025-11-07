@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { setToken } from "@/utils/auth";
+import { supabase } from "@/lib/supabaseClient";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,29 +11,37 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    // Check if user is already authenticated
+    const checkSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        router.push("/profile");
+      }
+    };
+    checkSession();
+  }, [router]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError("");
 
     try {
-      const response = await fetch("http://localhost:8000/auth/login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email, password }),
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
 
-      if (!response.ok) {
-        throw new Error("Login failed");
+      if (signInError) {
+        throw new Error(signInError.message);
       }
 
-      const data = await response.json();
-      setToken(data.access_token);
-      router.push("/");
+      router.push("/profile");
     } catch (err) {
-      setError("Failed to login. Please try again.");
+      setError(err instanceof Error ? err.message : "Failed to login. Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -104,4 +112,3 @@ export default function LoginPage() {
     </div>
   );
 }
-

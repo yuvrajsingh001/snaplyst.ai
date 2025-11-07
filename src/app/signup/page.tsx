@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { setToken } from "@/utils/auth";
+import { supabase } from "@/lib/supabaseClient";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -11,6 +11,19 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    // Check if user is already authenticated
+    const checkSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        router.push("/profile");
+      }
+    };
+    checkSession();
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,24 +37,19 @@ export default function SignupPage() {
     }
 
     try {
-      const response = await fetch("http://localhost:8000/auth/signup", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email, password }),
+      const { error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
       });
 
-      if (!response.ok) {
-        throw new Error("Signup failed");
+      if (signUpError) {
+        throw new Error(signUpError.message);
       }
 
-      const data = await response.json();
-      setToken(data.access_token);
-      router.push("/");
+      setError("Check your email to confirm your account!");
+      setIsLoading(false);
     } catch (err) {
-      setError("Failed to sign up. Please try again.");
-    } finally {
+      setError(err instanceof Error ? err.message : "Failed to sign up. Please try again.");
       setIsLoading(false);
     }
   };
@@ -102,7 +110,13 @@ export default function SignupPage() {
             />
           </div>
           {error && (
-            <div className="rounded-md bg-red-50 p-3 text-sm text-red-800 dark:bg-red-900/20 dark:text-red-400">
+            <div
+              className={`rounded-md p-3 text-sm ${
+                error.includes("Check your email")
+                  ? "bg-green-50 text-green-800 dark:bg-green-900/20 dark:text-green-400"
+                  : "bg-red-50 text-red-800 dark:bg-red-900/20 dark:text-red-400"
+              }`}
+            >
               {error}
             </div>
           )}
@@ -127,4 +141,3 @@ export default function SignupPage() {
     </div>
   );
 }
-

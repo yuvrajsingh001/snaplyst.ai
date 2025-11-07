@@ -1,37 +1,29 @@
-const TOKEN_KEY = "auth_token";
+import { supabase } from "@/lib/supabaseClient";
 
 /**
- * Stores a fake JWT token in localStorage
+ * Checks if user is authenticated via Supabase
  */
-export function setToken(token: string): void {
-  if (typeof window !== "undefined") {
-    localStorage.setItem(TOKEN_KEY, token);
-  }
+export async function isAuthenticated(): Promise<boolean> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  return !!session;
 }
 
 /**
- * Retrieves the token from localStorage
+ * Gets the current user from Supabase
  */
-export function getToken(): string | null {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem(TOKEN_KEY);
-  }
-  return null;
+export async function getCurrentUser() {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
 }
 
 /**
- * Removes the token from localStorage
+ * Signs out the user via Supabase
  */
-export function removeToken(): void {
-  if (typeof window !== "undefined") {
-    localStorage.removeItem(TOKEN_KEY);
-  }
-}
-
-/**
- * Checks if user is authenticated (has a token)
- */
-export function isAuthenticated(): boolean {
-  return getToken() !== null;
+export async function signOut() {
+  await supabase.auth.signOut();
 }
 
