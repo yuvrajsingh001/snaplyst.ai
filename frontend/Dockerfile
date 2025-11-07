@@ -14,6 +14,9 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 
 # Build Next.js
+# System fonts are used via CSS, so no network dependency during build
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm run build
 
 # --- Runner stage ---

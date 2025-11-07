@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: snaplyst_postgres
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: snaplystdb
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - snaplyst_net
+
+  minio:
+    image: minio/minio:latest
+    container_name: snaplyst_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    networks:
+      - snaplyst_net
+
+  redis:
+    image: redis:7
+    container_name: snaplyst_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - snaplyst_net
+
+  backend:
+    build: ./backend
+    container_name: snaplyst_backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://dev:dev@postgres:5432/snaplystdb
+      MINIO_URL: http://minio:9000
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - minio
+      - redis
+    networks:
+      - snaplyst_net
+
+  # Optional: frontend (Next.js)
+  frontend:
+    build: ./frontend
+    container_name: snaplyst_frontend
+    command: sh -c "CI=true pnpm install && pnpm run dev"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      CI: "true"
+    depends_on:
+      - backend
+    networks:
+      - snaplyst_net
+
+volumes:
+  pgdata:
+  miniodata:
+
+networks:
+  snaplyst_net:
