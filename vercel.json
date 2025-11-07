@@ -1,6 +1,4 @@
 {
-  "buildCommand": "pnpm install && pnpm run build",
-  "framework": "nextjs",
-  "rootDirectory": "frontend"
+  "buildCommand": "cd frontend && pnpm install && pnpm run build",
+  "framework": "nextjs"
 }
-
