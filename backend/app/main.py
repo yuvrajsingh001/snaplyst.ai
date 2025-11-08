@@ -17,6 +17,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
+
 @app.on_event("startup")
 def startup():
     if engine:
@@ -25,3 +26,4 @@ def startup():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+

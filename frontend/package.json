@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.80.0",
+    "@tanstack/react-query": "^5.90.7",
     "axios": "^1.13.2",
     "clsx": "^2.1.1",
     "next": "16.0.1",
@@ -19,6 +20,7 @@
     "react-dom": "19.2.0",
     "react-dropzone": "^14.3.8",
     "styled-jsx": "latest",
+    "uuid": "^11.0.3",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
@@ -27,6 +29,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/uuid": "^10.0.0",
     "autoprefixer": "^10.4.21",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",

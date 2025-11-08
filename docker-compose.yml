@@ -73,8 +73,6 @@ services:
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
       CI: "true"
-    depends_on:
-      - backend
     networks:
       - snaplyst_net
 
