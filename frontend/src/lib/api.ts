@@ -251,15 +251,26 @@ export async function updateStack(
   }
 
   // Update the stack
+  const updateData: any = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (updates.title !== undefined) {
+    updateData.title = updates.title || null;
+  }
+  if (updates.description !== undefined) {
+    updateData.description = updates.description || null;
+  }
+  if (updates.price !== undefined) {
+    updateData.price = updates.price || null;
+  }
+  if (updates.currency !== undefined) {
+    updateData.currency = updates.currency || null;
+  }
+
   const { data, error } = await supabase
     .from("product_stacks")
-    .update({
-      ...(updates.title !== undefined && { title: updates.title }),
-      ...(updates.description !== undefined && { description: updates.description }),
-      ...(updates.price !== undefined && { price: updates.price }),
-      ...(updates.currency !== undefined && { currency: updates.currency }),
-      updated_at: new Date().toISOString(),
-    })
+    .update(updateData)
     .eq("id", stackId)
     .select()
     .single();

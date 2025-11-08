@@ -110,8 +110,8 @@ export default function StackDetailPage() {
       setSaveSuccess(false);
 
       const updatedStack = await updateStack(stackId, {
-        description: description || null,
-        price: price || null,
+        description: description || undefined,
+        price: price || undefined,
       });
 
       setStack(updatedStack);
