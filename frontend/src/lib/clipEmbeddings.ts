@@ -56,14 +56,18 @@ export async function extractCLIPEmbedding(
     ? `${typeof window !== 'undefined' ? window.location.origin : ''}${endpoint}`
     : endpoint;
 
-  // Debug logging
-  if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
+  // Debug logging (always enabled for troubleshooting)
+  if (typeof window !== 'undefined') {
     console.log('[CLIP] Calling endpoint:', apiUrl);
     console.log('[CLIP] Endpoint from env:', endpoint);
-    console.log('[CLIP] Window origin:', typeof window !== 'undefined' ? window.location.origin : 'N/A');
+    console.log('[CLIP] Window origin:', window.location.origin);
+    console.log('[CLIP] Full URL:', apiUrl);
   }
 
   try {
+    console.log('[CLIP] Making POST request to:', apiUrl);
+    console.log('[CLIP] Image data length:', base64Data.length);
+    
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -74,18 +78,26 @@ export async function extractCLIPEmbedding(
       }),
     });
 
+    console.log('[CLIP] Response status:', response.status);
+    console.log('[CLIP] Response OK:', response.ok);
+    console.log('[CLIP] Response URL:', response.url);
+
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('[CLIP] Error response:', errorText);
       const errorMessage = `CLIP API error (${response.status}): ${errorText || response.statusText}`;
       
       // Provide helpful error messages
       if (response.status === 404) {
         throw new Error(
           `${errorMessage}\n\n` +
-          `The endpoint "${apiUrl}" was not found. Please check:\n` +
+          `The endpoint "${apiUrl}" was not found.\n` +
+          `Requested URL: ${apiUrl}\n` +
+          `Expected: ${window.location.origin}/api/clip-embedding\n` +
+          `Please check:\n` +
           `1. NEXT_PUBLIC_CLIP_API_ENDPOINT is set to "/api/clip-embedding"\n` +
           `2. The API route exists at src/app/api/clip-embedding/route.ts\n` +
-          `3. Restart your dev server after setting environment variables`
+          `3. Vercel deployment completed successfully`
         );
       }
       
