@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  getStack,
-  getStackImages,
-  updateStack,
   ensureUserExists,
 } from "@/lib/api";
 import type { User } from "@supabase/supabase-js";
+import {
+  useStack,
+  useStackImagesWithUrls,
+  useUpdateStack,
+} from "@/lib/hooks";
 
 export default function StackDetailPage() {
   const router = useRouter();
@@ -18,16 +20,28 @@ export default function StackDetailPage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
-  const [stack, setStack] = useState<any>(null);
-  const [images, setImages] = useState<any[]>([]);
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [error, setError] = useState<string>("");
-  const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Form state
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState<number | null>(null);
+
+  // React Query hooks
+  const {
+    data: stack,
+    isLoading: isLoadingStack,
+    error: stackError,
+  } = useStack(stackId);
+
+  const {
+    data: imagesWithUrls = [],
+    isLoading: isLoadingImages,
+    error: imagesError,
+  } = useStackImagesWithUrls(stackId);
+
+  // Mutations
+  const updateStackMutation = useUpdateStack();
 
   useEffect(() => {
     const checkSession = async () => {
@@ -58,63 +72,61 @@ export default function StackDetailPage() {
     return () => subscription.unsubscribe();
   }, [router]);
 
+  // Ensure profile exists on mount
   useEffect(() => {
-    const loadStack = async () => {
-      if (!user || !stackId) return;
+    const initializeProfile = async () => {
+      if (!user) return;
 
       try {
-        setIsLoading(true);
-        setError("");
-
         await ensureUserExists();
-
-        // Load stack details
-        const stackData = await getStack(stackId);
-        setStack(stackData);
-        setDescription(stackData.description || "");
-        setPrice(stackData.price || null);
-
-        // Load stack images
-        const imagesData = await getStackImages(stackId);
-        setImages(imagesData);
-
-        // Generate image URLs
-        const urls = await Promise.all(
-          imagesData.map(async (img: any) => {
-            const { data } = supabase.storage
-              .from("product-images")
-              .getPublicUrl(img.storage_path);
-            return data.publicUrl;
-          })
-        );
-        setImageUrls(urls);
       } catch (err) {
-        console.error("Failed to load stack:", err);
-        setError(err instanceof Error ? err.message : "Failed to load stack");
-      } finally {
-        setIsLoading(false);
+        console.error("Failed to initialize profile:", err);
+        setError(err instanceof Error ? err.message : "Failed to initialize profile");
       }
     };
 
     if (user) {
-      loadStack();
+      initializeProfile();
     }
-  }, [user, stackId]);
+  }, [user]);
+
+  // Update form state when stack data loads
+  useEffect(() => {
+    if (stack) {
+      setDescription(stack.description || "");
+      setPrice(stack.price || null);
+    }
+  }, [stack]);
+
+  // Set error from query errors
+  useEffect(() => {
+    if (stackError) {
+      setError(stackError instanceof Error ? stackError.message : "Failed to load stack");
+    } else if (imagesError) {
+      setError(imagesError instanceof Error ? imagesError.message : "Failed to load images");
+    }
+  }, [stackError, imagesError]);
+
+  // Set loading state
+  useEffect(() => {
+    setIsLoading(isLoadingStack || isLoadingImages);
+  }, [isLoadingStack, isLoadingImages]);
 
   const handleSave = async () => {
     if (!stackId) return;
 
     try {
-      setIsSaving(true);
       setError("");
       setSaveSuccess(false);
 
-      const updatedStack = await updateStack(stackId, {
-        description: description || undefined,
-        price: price || undefined,
+      await updateStackMutation.mutateAsync({
+        stackId,
+        updates: {
+          description: description || undefined,
+          price: price || undefined,
+        },
       });
 
-      setStack(updatedStack);
       setSaveSuccess(true);
       
       // Hide success message after 3 seconds
@@ -122,8 +134,6 @@ export default function StackDetailPage() {
     } catch (err) {
       console.error("Failed to update stack:", err);
       setError(err instanceof Error ? err.message : "Failed to update stack");
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -206,21 +216,21 @@ export default function StackDetailPage() {
         )}
 
         {/* Horizontal Image Gallery */}
-        {images.length > 0 ? (
+        {imagesWithUrls.length > 0 ? (
           <div className="mb-8">
             <h2 className="mb-4 text-lg font-semibold text-black dark:text-zinc-50">
-              Images ({images.length})
+              Images ({imagesWithUrls.length})
             </h2>
             <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-zinc-300 scrollbar-track-zinc-100 dark:scrollbar-thumb-zinc-700 dark:scrollbar-track-zinc-800">
               <div className="flex gap-4 pb-4" style={{ minWidth: "max-content" }}>
-                {imageUrls.map((url, index) => (
+                {imagesWithUrls.map((img, index) => (
                   <div
-                    key={images[index]?.id || index}
+                    key={img.id || index}
                     className="flex-shrink-0"
                   >
                     <div className="relative h-64 w-64 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm hover:shadow-md transition-shadow dark:border-zinc-800 dark:bg-zinc-800">
                       <img
-                        src={url}
+                        src={img.publicUrl}
                         alt={`Stack image ${index + 1}`}
                         className="h-full w-full object-cover"
                       />
@@ -289,10 +299,10 @@ export default function StackDetailPage() {
             <div className="flex justify-end">
               <button
                 onClick={handleSave}
-                disabled={isSaving}
+                disabled={updateStackMutation.isPending}
                 className="rounded-lg bg-blue-600 px-6 py-2 text-white font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {isSaving ? "Saving..." : "Save Changes"}
+                {updateStackMutation.isPending ? "Saving..." : "Save Changes"}
               </button>
             </div>
           </div>

@@ -5,25 +5,27 @@ import { useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  createStack,
-  getStacks,
-  uploadToSupabaseStorage,
-  createProductImage,
-  assignImageToStack,
-  getStackImages,
   ensureUserExists,
-  getUnsortedImages,
-  getStackHeaderImage,
-  deleteAllStacks,
-  deleteImage,
 } from "@/lib/api";
 import {
-  processImagesWithVision,
-  groupSimilarImagesWithVision,
-  calculateSimilarityPercentage,
-} from "@/lib/googleVision";
+  processImages,
+} from "@/lib/imageProcessing";
+import {
+  groupSimilarImagesCombined,
+  calculateCombinedSimilarityPercentage,
+} from "@/lib/combinedSimilarity";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
+import {
+  useStacksWithHeaders,
+  useUnsortedImagesWithUrls,
+  useCreateStack,
+  useDeleteAllStacks,
+  useDeleteImage,
+  useAssignImageToStack,
+  useUploadImage,
+  useCreateProductImage,
+} from "@/lib/hooks";
 
 type MenuItem = "profile" | "about" | "settings";
 
@@ -31,16 +33,40 @@ export default function ProfilePage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
-  const [uploadedImages, setUploadedImages] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isSorting, setIsSorting] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeMenuItem, setActiveMenuItem] = useState<MenuItem>("profile");
-  const [stacks, setStacks] = useState<any[]>([]);
-  const [stacksWithHeaders, setStacksWithHeaders] = useState<Array<{ stack: any; headerImage: any }>>([]);
-  const [unsortedImages, setUnsortedImages] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
+
+  // React Query hooks
+  const {
+    data: stacksWithHeaders = [],
+    isLoading: isLoadingStacks,
+    error: stacksError,
+  } = useStacksWithHeaders(user?.id);
+
+  const {
+    data: unsortedImagesWithUrls = [],
+    isLoading: isLoadingUnsorted,
+    error: unsortedError,
+  } = useUnsortedImagesWithUrls(user?.id);
+
+  // Mutations
+  const createStackMutation = useCreateStack();
+  const deleteAllStacksMutation = useDeleteAllStacks();
+  const deleteImageMutation = useDeleteImage();
+  const assignImageMutation = useAssignImageToStack();
+  const uploadImageMutation = useUploadImage();
+  const createProductImageMutation = useCreateProductImage();
+
+  // Derived state
+  const unsortedImages = unsortedImagesWithUrls.map((img) => ({
+    ...img,
+    storage_path: img.storage_path,
+  }));
+  const uploadedImages = unsortedImagesWithUrls.map((img) => img.signedUrl).filter(Boolean);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -74,62 +100,13 @@ export default function ProfilePage() {
     return () => subscription.unsubscribe();
   }, [router]);
 
-  // Load stacks with their header images
-  const loadStacksWithHeaders = useCallback(async () => {
-    try {
-      const stacksData = await getStacks();
-      setStacks(stacksData);
-      
-      // Get header image for each stack
-      const stacksWithHeaderImages = await Promise.all(
-        stacksData.map(async (stack) => {
-          const headerImage = await getStackHeaderImage(stack.id);
-          return { stack, headerImage };
-        })
-      );
-      
-      setStacksWithHeaders(stacksWithHeaderImages);
-    } catch (err) {
-      console.error("Failed to load stacks:", err);
-    }
-  }, []);
-
-  // Load unsorted images
-  const loadUnsortedImages = useCallback(async () => {
-    try {
-      const images = await getUnsortedImages();
-      setUnsortedImages(images);
-      
-      // Create preview URLs for unsorted images
-      const previewUrls = await Promise.all(
-        images.map(async (img) => {
-          const { data } = await supabase.storage
-            .from("product-images")
-            .createSignedUrl(img.storage_path, 3600);
-          return data?.signedUrl || "";
-        })
-      );
-      setUploadedImages(previewUrls.filter(url => url !== ""));
-    } catch (err) {
-      console.error("Failed to load unsorted images:", err);
-    }
-  }, []);
-
-  // Ensure profile exists and load stacks on mount
+  // Ensure profile exists on mount
   useEffect(() => {
     const initializeProfile = async () => {
       if (!user) return;
 
       try {
-        // First ensure the profile exists in the database
         await ensureUserExists();
-        
-        // Load stacks and their header images
-        await loadStacksWithHeaders();
-        
-        // Load unsorted images
-        await loadUnsortedImages();
-        
         setError(""); // Clear any previous errors
       } catch (err) {
         console.error("Failed to initialize profile:", err);
@@ -141,7 +118,16 @@ export default function ProfilePage() {
     if (user) {
       initializeProfile();
     }
-  }, [user, loadStacksWithHeaders, loadUnsortedImages]);
+  }, [user]);
+
+  // Set error from query errors
+  useEffect(() => {
+    if (stacksError) {
+      setError(stacksError instanceof Error ? stacksError.message : "Failed to load stacks");
+    } else if (unsortedError) {
+      setError(unsortedError instanceof Error ? unsortedError.message : "Failed to load unsorted images");
+    }
+  }, [stacksError, unsortedError]);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -149,6 +135,20 @@ export default function ProfilePage() {
       setError("");
 
       try {
+        // Check for CLIP API endpoint configuration
+        const clipApiEndpoint = process.env.NEXT_PUBLIC_CLIP_API_ENDPOINT;
+        if (!clipApiEndpoint) {
+          setError(
+            "CLIP API endpoint not configured. " +
+            "Please add NEXT_PUBLIC_CLIP_API_ENDPOINT=/api/clip-embedding to your .env.local file " +
+            "and restart your dev server. See CLIP_SETUP.md for details."
+          );
+          setIsUploading(false);
+          return;
+        }
+
+        console.log("[Profile] CLIP API endpoint:", clipApiEndpoint);
+
         // Get Google Vision API key from environment
         const googleVisionApiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_API_KEY;
         if (!googleVisionApiKey || googleVisionApiKey === 'your_google_vision_api_key') {
@@ -161,46 +161,41 @@ export default function ProfilePage() {
           return;
         }
 
-        // Step 1: Analyze images with Google Vision API
-        console.log("Analyzing images with Google Vision API...");
-        const imageAnalyses = await processImagesWithVision(acceptedFiles, googleVisionApiKey);
+        // Step 1: Process images with CLIP embeddings and pHash
+        console.log("Processing images with CLIP embeddings and pHash...");
+        const processedImages = await processImages(acceptedFiles, {
+          clipApiEndpoint: clipApiEndpoint,
+          includeVisionLabels: false, // Optional: set to true if you want Vision labels for metadata
+        });
 
         // Step 2: Upload all images to storage and create records (without stack_id)
         console.log("Uploading images to storage...");
         const user = await supabase.auth.getUser();
-        const newPreviewUrls: string[] = [];
 
-        for (const { file, features, labels } of imageAnalyses) {
+        for (const { file, clipEmbedding, pHash, labels } of processedImages) {
           try {
             const fileExt = file.name.split(".").pop();
             const fileName = `${user.data.user?.id}/${Date.now()}_${uuidv4()}.${fileExt}`;
 
             // Upload file to Supabase Storage
-            const { path } = await uploadToSupabaseStorage(file, fileName);
+            const uploadResult = await uploadImageMutation.mutateAsync({ file, path: fileName });
+            const path = uploadResult.path;
 
-            // Create product_image record WITHOUT stack_id, storing features and labels in metadata
-            const imageRecord = await createProductImage({
+            // Create product_image record WITHOUT stack_id, storing CLIP embedding and pHash in metadata
+            await createProductImageMutation.mutateAsync({
               stack_id: null, // No stack yet - will assign after sorting
               storage_path: path,
               filename: file.name,
-              image_hash: null,
+              image_hash: pHash, // Store pHash in image_hash field
               metadata: {
-                features: features,
-                labels: labels,
+                clipEmbedding: clipEmbedding, // 512D CLIP vector
+                pHash: pHash, // Also store in metadata for easy access
+                labels: labels || [], // Optional Vision labels
               },
             });
 
-            // Create preview URL for display
-            const { data: urlData } = await supabase.storage
-              .from("product-images")
-              .createSignedUrl(path, 3600);
-            
-            if (urlData?.signedUrl) {
-              newPreviewUrls.push(urlData.signedUrl);
-            }
-
             console.log(
-              `Uploaded image: ${file.name} (labels: ${labels.slice(0, 3).map((l: { description: string; score: number }) => l.description).join(', ')})`
+              `Uploaded image: ${file.name} (CLIP embedding: ${clipEmbedding.length}D, pHash: ${pHash.substring(0, 16)}...)`
             );
           } catch (err) {
             console.error("Failed to upload file:", file.name, err);
@@ -212,11 +207,7 @@ export default function ProfilePage() {
           }
         }
 
-        // Update preview URLs
-        setUploadedImages((prev) => [...prev, ...newPreviewUrls]);
-        
-        // Reload unsorted images
-        await loadUnsortedImages();
+        // React Query will automatically refetch unsorted images due to cache invalidation
         
         console.log("Upload complete! Click 'Sort' to group similar images.");
       } catch (err) {
@@ -235,10 +226,11 @@ export default function ProfilePage() {
     setError("");
 
     try {
-      const SIMILARITY_THRESHOLD = 60; // 60% similarity threshold
+      // Use 75% threshold for CLIP-based similarity (0.75 cosine similarity)
+      const SIMILARITY_THRESHOLD = 75; // 75% combined similarity threshold
 
-      // Get all unsorted images
-      const images = await getUnsortedImages();
+      // Use React Query data for unsorted images
+      const images = unsortedImages;
       
       if (images.length === 0) {
         setError("No unsorted images to sort.");
@@ -246,32 +238,38 @@ export default function ProfilePage() {
         return;
       }
 
-      // Extract features and labels from metadata
-      const imagesWithFeatures = images
-        .filter((img) => img.metadata && img.metadata.features && img.metadata.labels)
+      // Extract CLIP embeddings and pHash from metadata
+      const imagesWithEmbeddings = images
+        .filter((img) => 
+          img.metadata && 
+          img.metadata.clipEmbedding && 
+          Array.isArray(img.metadata.clipEmbedding) &&
+          img.metadata.clipEmbedding.length === 512 &&
+          img.metadata.pHash
+        )
         .map((img) => ({
           id: img.id,
-          features: img.metadata.features as number[],
-          labels: img.metadata.labels as Array<{ description: string; score: number }>,
+          clipEmbedding: img.metadata.clipEmbedding as number[],
+          pHash: img.metadata.pHash as string,
         }));
 
-      if (imagesWithFeatures.length === 0) {
-        setError("No images with analysis data found. Please re-upload images.");
+      if (imagesWithEmbeddings.length === 0) {
+        setError(
+          "No images with CLIP embeddings found. Please re-upload images. " +
+          "Make sure NEXT_PUBLIC_CLIP_API_ENDPOINT is configured."
+        );
         setIsSorting(false);
         return;
       }
 
-      console.log(`Sorting ${imagesWithFeatures.length} images...`);
+      console.log(`Sorting ${imagesWithEmbeddings.length} images using CLIP + pHash...`);
 
-      // Group similar images
-      const imageGroups = groupSimilarImagesWithVision(
-        imagesWithFeatures.map((img) => ({
-          id: img.id,
-          features: img.features,
-          labels: img.labels,
-          file: {} as File, // Not needed for grouping
-        })),
-        SIMILARITY_THRESHOLD
+      // Group similar images using combined CLIP + pHash similarity
+      const imageGroups = groupSimilarImagesCombined(
+        imagesWithEmbeddings,
+        SIMILARITY_THRESHOLD,
+        0.7, // CLIP weight: 70%
+        0.3  // pHash weight: 30%
       );
 
       console.log(`Found ${imageGroups.length} groups of similar images`);
@@ -283,7 +281,7 @@ export default function ProfilePage() {
         if (group.length === 0) continue;
 
         // Create a stack for this group
-        const stack = await createStack({
+        const stack = await createStackMutation.mutateAsync({
           title: `Similar Images Group ${i + 1}`,
           description: `Group of ${group.length} similar images - ${new Date().toLocaleDateString()}`,
           metadata: {
@@ -295,7 +293,7 @@ export default function ProfilePage() {
         // Assign all images in this group to the stack
         for (const img of group) {
           try {
-            await assignImageToStack(img.id, stack.id);
+            await assignImageMutation.mutateAsync({ imageId: img.id, stackId: stack.id });
             
             // Calculate and store average similarity for the group
             if (group.length > 1) {
@@ -304,9 +302,13 @@ export default function ProfilePage() {
               
               for (let j = 0; j < group.length; j++) {
                 for (let k = j + 1; k < group.length; k++) {
-                  const similarity = calculateSimilarityPercentage(
-                    group[j].features,
-                    group[k].features
+                  const similarity = calculateCombinedSimilarityPercentage(
+                    group[j].clipEmbedding,
+                    group[k].clipEmbedding,
+                    group[j].pHash,
+                    group[k].pHash,
+                    0.7, // CLIP weight
+                    0.3  // pHash weight
                   );
                   totalSimilarity += similarity;
                   comparisons++;
@@ -331,7 +333,7 @@ export default function ProfilePage() {
       const groupedImageIds = new Set(
         imageGroups.flatMap((group) => group.map((img) => img.id))
       );
-      const ungroupedImages = imagesWithFeatures.filter(
+      const ungroupedImages = imagesWithEmbeddings.filter(
         (img) => !groupedImageIds.has(img.id)
       );
 
@@ -339,20 +341,18 @@ export default function ProfilePage() {
         console.log(`Creating individual stacks for ${ungroupedImages.length} unique images...`);
         for (const img of ungroupedImages) {
           const imageRecord = images.find((i) => i.id === img.id);
-          const stack = await createStack({
+          const stack = await createStackMutation.mutateAsync({
             title: `Unique Image: ${imageRecord?.filename || 'Image'}`,
             description: `Individual image - ${new Date().toLocaleDateString()}`,
             metadata: {
               is_unique: true,
             },
           });
-          await assignImageToStack(img.id, stack.id);
+          await assignImageMutation.mutateAsync({ imageId: img.id, stackId: stack.id });
         }
       }
 
-      // Refresh stacks and clear unsorted images
-      await loadStacksWithHeaders();
-      await loadUnsortedImages();
+      // React Query will automatically refetch due to cache invalidation in mutations
       
       console.log("Sorting complete!");
     } catch (err) {
@@ -361,7 +361,7 @@ export default function ProfilePage() {
     } finally {
       setIsSorting(false);
     }
-  }, [loadStacksWithHeaders, loadUnsortedImages]);
+  }, [unsortedImages, createStackMutation, assignImageMutation]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -386,10 +386,7 @@ export default function ProfilePage() {
       setIsClearing(true);
       setError("");
 
-      await deleteAllStacks();
-      
-      // Reload stacks (should be empty now)
-      await loadStacksWithHeaders();
+      await deleteAllStacksMutation.mutateAsync();
       
       console.log("All stacks deleted successfully");
     } catch (err) {
@@ -398,7 +395,7 @@ export default function ProfilePage() {
     } finally {
       setIsClearing(false);
     }
-  }, [loadStacksWithHeaders]);
+  }, [deleteAllStacksMutation]);
 
   // Handle delete unsorted image
   const handleDeleteImage = useCallback(async (imageId: string, imageIndex: number) => {
@@ -409,22 +406,16 @@ export default function ProfilePage() {
     try {
       setError("");
 
-      await deleteImage(imageId);
-      
-      // Remove from local state
-      setUnsortedImages((prev) => prev.filter((img) => img.id !== imageId));
-      
-      // Reload unsorted images to get fresh URLs
-      await loadUnsortedImages();
+      await deleteImageMutation.mutateAsync(imageId);
       
       console.log("Image deleted successfully");
     } catch (err) {
       console.error("Failed to delete image:", err);
       setError(err instanceof Error ? err.message : "Failed to delete image");
     }
-  }, [loadUnsortedImages]);
+  }, [deleteImageMutation]);
 
-  if (isLoading) {
+  if (isLoading || isLoadingStacks || isLoadingUnsorted) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
         <div className="text-zinc-600 dark:text-zinc-400">Loading...</div>

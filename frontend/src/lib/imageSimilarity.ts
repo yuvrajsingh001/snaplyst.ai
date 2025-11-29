@@ -94,7 +94,7 @@ export function calculateSimilarity(hash1: string, hash2: string): number {
  */
 export function groupSimilarImages(
   images: Array<{ id: string; hash: string; file: File }>,
-  threshold: number = 50
+  threshold: number = 75
 ): Array<Array<{ id: string; hash: string; file: File }>> {
   const groups: Array<Array<{ id: string; hash: string; file: File }>> = [];
   const processed = new Set<string>();
