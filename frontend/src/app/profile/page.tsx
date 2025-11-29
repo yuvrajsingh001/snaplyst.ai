@@ -255,7 +255,7 @@ export default function ProfilePage() {
 
         // Create a stack for this group
         const stack = await createStackMutation.mutateAsync({
-          title: `Similar Images Group ${i + 1}`,
+          title: `Product ${i + 1}`,
           description: `Group of ${group.length} similar images - ${new Date().toLocaleDateString()}`,
           metadata: {
             similarity_threshold: SIMILARITY_THRESHOLD,
@@ -308,10 +308,11 @@ export default function ProfilePage() {
 
       if (ungroupedImages.length > 0) {
         console.log(`Creating individual stacks for ${ungroupedImages.length} unique images...`);
-        for (const img of ungroupedImages) {
+        for (let i = 0; i < ungroupedImages.length; i++) {
+          const img = ungroupedImages[i];
           const imageRecord = images.find((i) => i.id === img.id);
           const stack = await createStackMutation.mutateAsync({
-            title: `Unique Image: ${imageRecord?.filename || 'Image'}`,
+            title: `Product ${imageGroups.length + i + 1}`,
             description: `Individual image - ${new Date().toLocaleDateString()}`,
             metadata: {
               is_unique: true,

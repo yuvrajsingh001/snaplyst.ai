@@ -182,7 +182,7 @@ export async function getStacks() {
     .from("product_stacks")
     .select("*")
     .eq("owner_id", user.id)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: true }); // Oldest first, so new stacks appear at the end
 
   if (error) {
     throw new Error(error.message || "Failed to fetch stacks");

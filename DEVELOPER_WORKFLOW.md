@@ -168,6 +168,7 @@ Snaplyst is a full-stack web application for organizing product images into "sta
 - `getUnsortedImages()` - Gets images without stack
 - `deleteStack()` - Deletes stack and all images
 - `deleteImage()` - Deletes single image
+- `cleanupOrphanedImages()` - Removes database records for files that don't exist in storage
 
 **All functions:**
 - Check authentication via `getCurrentUser()`
@@ -175,7 +176,43 @@ Snaplyst is a full-stack web application for organizing product images into "sta
 - Handle errors gracefully
 - Use Supabase client for database operations
 
-#### 5. **Image Analysis Services**
+**Error Handling:**
+- All image URL generation functions handle missing files gracefully
+- Missing files are logged as warnings and filtered out
+- Prevents application crashes from orphaned database records
+
+#### 5. **React Query Hooks** (`src/lib/hooks/`)
+
+**Purpose:** Data fetching and caching with React Query
+
+**Key Hooks:**
+
+**Image Hooks:**
+- `useUnsortedImages()` - Fetches unsorted images (without stack_id)
+- `useUnsortedImagesWithUrls()` - Fetches unsorted images with signed URLs
+  - Automatically handles missing files gracefully
+  - Filters out images where files don't exist in storage
+  - Logs warnings for orphaned records
+- `useImageUrl()` - Gets a single image URL (public or signed)
+  - Handles errors when creating signed URLs
+  - Returns null for missing files instead of crashing
+- `useImageUrls()` - Gets multiple image URLs at once
+  - Batch processing with error handling
+  - Filters out failed URLs
+
+**Stack Hooks:**
+- `useStacks()` - Fetches all user's stacks
+- `useStacksWithHeaders()` - Fetches stacks with header images
+- `useStackImages()` - Fetches images in a stack
+- `useStackImagesWithUrls()` - Fetches stack images with public URLs
+
+**Error Handling:**
+- All hooks that create signed URLs handle missing files gracefully
+- Missing files are logged as warnings and excluded from results
+- Prevents UI crashes from orphaned database records
+- Browser network errors (400 Bad Request) are logged but don't break the app
+
+#### 6. **Image Analysis Services**
 
 **Google Vision API** (`src/lib/googleVision.ts`)
 
@@ -349,8 +386,30 @@ Frontend: Fetch images in stack (getStackImages)
   ↓
 Frontend: Generate signed URLs for each image
   supabase.storage.from("product-images").getPublicUrl(path)
+  - Missing files are handled gracefully
+  - Orphaned records filtered out automatically
   ↓
 Frontend: Display images in gallery
+  - Only images with valid URLs are displayed
+```
+
+### 5. Error Handling Flow
+
+```
+When fetching images with URLs:
+  ↓
+For each image record:
+  - Attempt to create signed URL
+  - If file doesn't exist (400 error):
+    - Log warning with image details
+    - Mark image as having no URL
+    - Continue processing other images
+  ↓
+Filter out images without valid URLs
+  ↓
+Return only images with valid signed URLs
+  - App continues to function normally
+  - No crashes from missing files
 ```
 
 ---
@@ -560,6 +619,12 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
    - Backend exists for future expansion
    - Can add background jobs, webhooks, etc.
 
+6. **Graceful Error Handling:**
+   - Missing files are handled gracefully without breaking the UI
+   - Orphaned database records are filtered out automatically
+   - Warnings logged for debugging without crashing the app
+   - Cleanup utilities available for maintenance
+
 ---
 
 ## Common Issues & Solutions
@@ -604,6 +669,28 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 - Check file size limits (Supabase default: 50MB)
 - Verify storage path format is correct
 
+### 5. Missing Files / Orphaned Records
+
+**Symptoms:** 
+- Console warnings: "Failed to create signed URL... Object not found"
+- Images don't display even though database records exist
+- 400 Bad Request errors when accessing images
+
+**Root Cause:**
+- Database records exist for files that don't exist in Supabase Storage
+- Can happen if uploads partially failed or files were deleted manually
+
+**Solutions:**
+- Use `cleanupOrphanedImages()` function to remove orphaned records:
+  ```typescript
+  import { cleanupOrphanedImages } from '@/lib/api';
+  const result = await cleanupOrphanedImages();
+  console.log(`Cleaned up ${result.cleanedCount} orphaned records`);
+  ```
+- The app handles missing files gracefully - they're filtered out automatically
+- Browser network errors (400) are logged but don't break functionality
+- Check upload process to ensure files are uploaded before creating database records
+
 ---
 
 ## Future Enhancements
@@ -645,7 +732,12 @@ Snaplyst/
 │   │   │   ├── api.ts        # Supabase API wrapper
 │   │   │   ├── supabaseClient.ts
 │   │   │   ├── googleVision.ts
-│   │   │   └── imageSimilarity.ts
+│   │   │   ├── imageSimilarity.ts
+│   │   │   └── hooks/        # React Query hooks
+│   │   │       ├── useUnsortedImages.ts
+│   │   │       ├── useStackImages.ts
+│   │   │       ├── useImageUrl.ts
+│   │   │       └── useImageMutations.ts
 │   │   ├── utils/            # Helper functions
 │   │   │   └── auth.ts
 │   │   └── middleware.ts     # Next.js middleware
