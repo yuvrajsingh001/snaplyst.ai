@@ -32,11 +32,27 @@ export async function POST(req: NextRequest) {
   console.log('[CLIP API] ===== POST request received =====');
   console.log('[CLIP API] URL:', req.url);
   console.log('[CLIP API] Method:', req.method);
-  console.log('[CLIP API] Headers:', Object.fromEntries(req.headers.entries()));
+  console.log('[CLIP API] Content-Length:', req.headers.get('content-length'));
+  console.log('[CLIP API] Content-Type:', req.headers.get('content-type'));
   
   try {
+    // Check content length before parsing
+    const contentLength = req.headers.get('content-length');
+    if (contentLength) {
+      const sizeMB = parseInt(contentLength) / (1024 * 1024);
+      console.log('[CLIP API] Request body size:', sizeMB.toFixed(2), 'MB');
+      if (sizeMB > 10) {
+        return NextResponse.json(
+          { error: `Request body too large: ${sizeMB.toFixed(2)}MB. Maximum allowed: 10MB` },
+          { status: 413 }
+        );
+      }
+    }
+    
     const body = await req.json();
     const { image } = body;
+    
+    console.log('[CLIP API] Image data length:', image?.length || 0);
 
     if (!image) {
       return NextResponse.json(

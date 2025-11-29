@@ -1,14 +1,9 @@
 {
   "functions": {
     "src/app/api/clip-embedding/route.ts": {
-      "maxDuration": 30
+      "maxDuration": 30,
+      "memory": 1024
     }
-  },
-  "rewrites": [
-    {
-      "source": "/api/clip-embedding",
-      "destination": "/api/clip-embedding"
-    }
-  ]
+  }
 }
 
