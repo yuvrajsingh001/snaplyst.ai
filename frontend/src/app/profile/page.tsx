@@ -8,12 +8,10 @@ import {
   ensureUserExists,
 } from "@/lib/api";
 import {
-  processImages,
-} from "@/lib/imageProcessing";
-import {
-  groupSimilarImagesCombined,
-  calculateCombinedSimilarityPercentage,
-} from "@/lib/combinedSimilarity";
+  processImagesWithVision,
+  groupSimilarImagesWithVision,
+  calculateSimilarityPercentage,
+} from "@/lib/googleVision";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -135,20 +133,6 @@ export default function ProfilePage() {
       setError("");
 
       try {
-        // Check for CLIP API endpoint configuration
-        const clipApiEndpoint = process.env.NEXT_PUBLIC_CLIP_API_ENDPOINT;
-        if (!clipApiEndpoint) {
-          setError(
-            "CLIP API endpoint not configured. " +
-            "Please add NEXT_PUBLIC_CLIP_API_ENDPOINT=/api/clip-embedding to your .env.local file " +
-            "and restart your dev server. See CLIP_SETUP.md for details."
-          );
-          setIsUploading(false);
-          return;
-        }
-
-        console.log("[Profile] CLIP API endpoint:", clipApiEndpoint);
-
         // Get Google Vision API key from environment
         const googleVisionApiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_API_KEY;
         if (!googleVisionApiKey || googleVisionApiKey === 'your_google_vision_api_key') {
@@ -161,18 +145,15 @@ export default function ProfilePage() {
           return;
         }
 
-        // Step 1: Process images with CLIP embeddings and pHash
-        console.log("Processing images with CLIP embeddings and pHash...");
-        const processedImages = await processImages(acceptedFiles, {
-          clipApiEndpoint: clipApiEndpoint,
-          includeVisionLabels: false, // Optional: set to true if you want Vision labels for metadata
-        });
+        // Step 1: Analyze images with Google Vision API
+        console.log("Analyzing images with Google Vision API...");
+        const imageAnalyses = await processImagesWithVision(acceptedFiles, googleVisionApiKey);
 
         // Step 2: Upload all images to storage and create records (without stack_id)
         console.log("Uploading images to storage...");
         const user = await supabase.auth.getUser();
 
-        for (const { file, clipEmbedding, pHash, labels } of processedImages) {
+        for (const { file, features, labels } of imageAnalyses) {
           try {
             const fileExt = file.name.split(".").pop();
             const fileName = `${user.data.user?.id}/${Date.now()}_${uuidv4()}.${fileExt}`;
@@ -181,21 +162,20 @@ export default function ProfilePage() {
             const uploadResult = await uploadImageMutation.mutateAsync({ file, path: fileName });
             const path = uploadResult.path;
 
-            // Create product_image record WITHOUT stack_id, storing CLIP embedding and pHash in metadata
+            // Create product_image record WITHOUT stack_id, storing features and labels in metadata
             await createProductImageMutation.mutateAsync({
               stack_id: null, // No stack yet - will assign after sorting
               storage_path: path,
               filename: file.name,
-              image_hash: pHash, // Store pHash in image_hash field
+              image_hash: null,
               metadata: {
-                clipEmbedding: clipEmbedding, // 512D CLIP vector
-                pHash: pHash, // Also store in metadata for easy access
-                labels: labels || [], // Optional Vision labels
+                features: features,
+                labels: labels,
               },
             });
 
             console.log(
-              `Uploaded image: ${file.name} (CLIP embedding: ${clipEmbedding.length}D, pHash: ${pHash.substring(0, 16)}...)`
+              `Uploaded image: ${file.name} (labels: ${labels.slice(0, 3).map((l: { description: string; score: number }) => l.description).join(', ')})`
             );
           } catch (err) {
             console.error("Failed to upload file:", file.name, err);
@@ -226,8 +206,7 @@ export default function ProfilePage() {
     setError("");
 
     try {
-      // Use 75% threshold for CLIP-based similarity (0.75 cosine similarity)
-      const SIMILARITY_THRESHOLD = 75; // 75% combined similarity threshold
+      const SIMILARITY_THRESHOLD = 60; // 60% similarity threshold
 
       // Use React Query data for unsorted images
       const images = unsortedImages;
@@ -238,38 +217,32 @@ export default function ProfilePage() {
         return;
       }
 
-      // Extract CLIP embeddings and pHash from metadata
-      const imagesWithEmbeddings = images
-        .filter((img) => 
-          img.metadata && 
-          img.metadata.clipEmbedding && 
-          Array.isArray(img.metadata.clipEmbedding) &&
-          img.metadata.clipEmbedding.length === 512 &&
-          img.metadata.pHash
-        )
+      // Extract features and labels from metadata
+      const imagesWithFeatures = images
+        .filter((img) => img.metadata && img.metadata.features && img.metadata.labels)
         .map((img) => ({
           id: img.id,
-          clipEmbedding: img.metadata.clipEmbedding as number[],
-          pHash: img.metadata.pHash as string,
+          features: img.metadata.features as number[],
+          labels: img.metadata.labels as Array<{ description: string; score: number }>,
         }));
 
-      if (imagesWithEmbeddings.length === 0) {
-        setError(
-          "No images with CLIP embeddings found. Please re-upload images. " +
-          "Make sure NEXT_PUBLIC_CLIP_API_ENDPOINT is configured."
-        );
+      if (imagesWithFeatures.length === 0) {
+        setError("No images with analysis data found. Please re-upload images.");
         setIsSorting(false);
         return;
       }
 
-      console.log(`Sorting ${imagesWithEmbeddings.length} images using CLIP + pHash...`);
+      console.log(`Sorting ${imagesWithFeatures.length} images...`);
 
-      // Group similar images using combined CLIP + pHash similarity
-      const imageGroups = groupSimilarImagesCombined(
-        imagesWithEmbeddings,
-        SIMILARITY_THRESHOLD,
-        0.7, // CLIP weight: 70%
-        0.3  // pHash weight: 30%
+      // Group similar images
+      const imageGroups = groupSimilarImagesWithVision(
+        imagesWithFeatures.map((img) => ({
+          id: img.id,
+          features: img.features,
+          labels: img.labels,
+          file: {} as File, // Not needed for grouping
+        })),
+        SIMILARITY_THRESHOLD
       );
 
       console.log(`Found ${imageGroups.length} groups of similar images`);
@@ -302,13 +275,9 @@ export default function ProfilePage() {
               
               for (let j = 0; j < group.length; j++) {
                 for (let k = j + 1; k < group.length; k++) {
-                  const similarity = calculateCombinedSimilarityPercentage(
-                    group[j].clipEmbedding,
-                    group[k].clipEmbedding,
-                    group[j].pHash,
-                    group[k].pHash,
-                    0.7, // CLIP weight
-                    0.3  // pHash weight
+                  const similarity = calculateSimilarityPercentage(
+                    group[j].features,
+                    group[k].features
                   );
                   totalSimilarity += similarity;
                   comparisons++;
@@ -333,7 +302,7 @@ export default function ProfilePage() {
       const groupedImageIds = new Set(
         imageGroups.flatMap((group) => group.map((img) => img.id))
       );
-      const ungroupedImages = imagesWithEmbeddings.filter(
+      const ungroupedImages = imagesWithFeatures.filter(
         (img) => !groupedImageIds.has(img.id)
       );
 
