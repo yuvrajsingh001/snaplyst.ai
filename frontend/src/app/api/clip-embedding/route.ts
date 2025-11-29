@@ -4,6 +4,18 @@ import { NextRequest, NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// Explicitly allow POST method for Vercel
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    },
+  });
+}
+
 /**
  * CLIP Embedding API Route
  * 
@@ -16,7 +28,11 @@ export const runtime = 'nodejs';
  * Response: { embedding: number[] } // 512-dimensional vector
  */
 export async function POST(req: NextRequest) {
-  console.log('[CLIP API] POST request received at /api/clip-embedding');
+  // Enhanced logging for Vercel debugging
+  console.log('[CLIP API] ===== POST request received =====');
+  console.log('[CLIP API] URL:', req.url);
+  console.log('[CLIP API] Method:', req.method);
+  console.log('[CLIP API] Headers:', Object.fromEntries(req.headers.entries()));
   
   try {
     const body = await req.json();
