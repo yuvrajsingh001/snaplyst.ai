@@ -50,7 +50,14 @@ In Railway, go to your service → Variables tab and add:
   - Example: `https://snaplyst-ai.vercel.app,https://your-custom-domain.com`
   - For local development, include: `http://localhost:3000,http://127.0.0.1:3000,https://snaplyst-ai.vercel.app`
 
-**Important:** After adding `ALLOWED_ORIGINS`, Railway will automatically redeploy. Make sure the value matches your exact frontend URL.
+- `SUPABASE_URL` - Your Supabase project URL
+  - Example: `https://your-project.supabase.co`
+
+- `SUPABASE_SERVICE_ROLE_KEY` - Your Supabase service role key (NOT the anon key!)
+  - Get this from Supabase Dashboard → Settings → API → service_role key
+  - ⚠️ **Important:** This key has admin access - keep it secret!
+
+**Important:** After adding environment variables, Railway will automatically redeploy. Make sure the values match your Supabase project.
 
 **Note:** The Dockerfile is intentionally ignored via `.dockerignore` to force Railway to use the optimized nixpacks build, which handles large dependencies better.
 

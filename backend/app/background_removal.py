@@ -96,10 +96,17 @@ async def remove_background(request: RemoveBackgroundRequest):
         new_path = f"{'/'.join(path_parts[:-1])}/{name_without_ext}_bg_removed.png"
         
         # Upload processed image directly to Supabase Storage
+        # Convert bytes to file-like object for Supabase
+        from io import BytesIO
+        file_obj = BytesIO(processed_image_bytes)
+        
         upload_result = supabase.storage.from("product-images").upload(
             new_path,
-            processed_image_bytes,
-            file_options={"content-type": "image/png", "upsert": "true"}
+            file_obj,
+            file_options={
+                "content-type": "image/png",
+                "upsert": "true"
+            }
         )
         
         if upload_result.error:
