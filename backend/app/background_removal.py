@@ -52,19 +52,9 @@ async def remove_background(request: RemoveBackgroundRequest):
             response.raise_for_status()
             image_data = response.content
         
-        # Load image
-        img = Image.open(BytesIO(image_data)).convert("RGB")
-        img_np = np.asarray(img)
-        img_np = img_np.copy()
-        
         # Remove background using rembg (lighter than backgroundremover)
-        # Convert PIL Image to bytes for rembg
-        img_bytes = BytesIO()
-        img.save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        
-        # Remove background
-        output_bytes = remove(img_bytes.read(), session=new_session('u2net'))
+        # rembg works directly with image bytes
+        output_bytes = remove(image_data, session=new_session('u2net'))
         result_img_pil = Image.open(BytesIO(output_bytes)).convert("RGBA")
         
         # result_img_pil is already a PIL Image with transparency
@@ -108,16 +98,9 @@ async def remove_background_batch(image_urls: list[str]):
                 response.raise_for_status()
                 image_data = response.content
             
-            # Process image
-            img = Image.open(BytesIO(image_data)).convert("RGB")
-            
-            # Convert PIL Image to bytes for rembg
-            img_bytes = BytesIO()
-            img.save(img_bytes, format='PNG')
-            img_bytes.seek(0)
-            
-            # Remove background
-            output_bytes = remove(img_bytes.read(), session=new_session('u2net'))
+            # Remove background using rembg
+            # rembg works directly with image bytes
+            output_bytes = remove(image_data, session=new_session('u2net'))
             result_img_pil = Image.open(BytesIO(output_bytes)).convert("RGBA")
             
             # Convert to base64
