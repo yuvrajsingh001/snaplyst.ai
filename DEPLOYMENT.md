@@ -35,10 +35,11 @@ When deploying to Vercel, **only the frontend (Next.js) will be deployed**. The 
 1. Go to [railway.app](https://railway.app)
 2. Create account and new project
 3. Connect your GitHub repository
-4. Add Python service
-5. Set root directory to `backend/`
-6. Railway auto-detects FastAPI and deploys
-7. Get your backend URL (e.g., `https://your-app.railway.app`)
+4. Click "Add Service" → "GitHub Repo"
+5. Select your repository
+6. **IMPORTANT:** In the service settings, go to "Settings" → "Root Directory" and set it to `backend`
+7. Railway will auto-detect Python and deploy
+8. Get your backend URL from the "Settings" → "Domains" section
 
 **Environment Variables:**
 - No special variables needed for basic setup
