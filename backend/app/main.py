@@ -42,15 +42,15 @@ try:
         logger.info("Background removal router loaded successfully")
     else:
         logger.warning(f"Background removal router loaded but rembg unavailable: {import_error}")
-except Exception as e:
-    logger.error(f"Failed to load background removal router: {e}", exc_info=True)
+except Exception as import_exception:
+    logger.error(f"Failed to load background removal router: {import_exception}", exc_info=True)
     # Create a dummy router to prevent 404s
     from fastapi import APIRouter
     dummy_router = APIRouter(prefix="/api/background-removal")
     
     @dummy_router.post("/remove")
     def dummy_remove():
-        return {"error": "Background removal not available", "detail": str(e)}
+        return {"error": "Background removal not available", "detail": str(import_exception)}
     
     app.include_router(dummy_router)
 
