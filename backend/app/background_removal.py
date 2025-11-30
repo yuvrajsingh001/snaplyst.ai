@@ -4,7 +4,6 @@ Background removal endpoint for images
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import httpx
-import numpy as np
 from PIL import Image
 from io import BytesIO
 import os
