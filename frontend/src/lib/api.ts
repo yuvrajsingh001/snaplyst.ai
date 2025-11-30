@@ -822,23 +822,55 @@ export async function removeBackgroundFromImage(imageId: string | number) {
   const blob = new Blob([binaryData], { type: "image/png" });
   const file = new File([blob], `bg_removed_${Date.now()}.png`, { type: "image/png" });
 
-  // Generate new storage path
-  const originalPath = image.storage_path;
+  // Generate new storage path (use original path from metadata if available)
+  const originalPath = metadata.original_storage_path || image.storage_path;
   const pathParts = originalPath.split("/");
   const filename = pathParts[pathParts.length - 1];
   const nameWithoutExt = filename.split(".")[0];
   const newPath = `${pathParts.slice(0, -1).join("/")}/${nameWithoutExt}_bg_removed.png`;
 
-  // Upload processed image to Supabase Storage
-  const { data: uploadData, error: uploadError } = await supabase.storage
-    .from("product-images")
-    .upload(newPath, file, {
-      cacheControl: "3600",
-      upsert: false,
-    });
+  // Check if processed image already exists in storage
+  const existingProcessedPath = metadata.processed_storage_path;
+  let uploadData;
+  
+  if (existingProcessedPath) {
+    // Verify the file exists
+    const { data: fileCheck } = await supabase.storage
+      .from("product-images")
+      .list(existingProcessedPath.split("/").slice(0, -1).join("/"), {
+        search: existingProcessedPath.split("/").pop(),
+      });
+    
+    if (fileCheck && fileCheck.length > 0) {
+      console.log("Reusing existing processed image, skipping upload");
+      uploadData = { path: existingProcessedPath };
+    } else {
+      // File doesn't exist, upload new one
+      const { data: uploadResult, error: uploadError } = await supabase.storage
+        .from("product-images")
+        .upload(newPath, file, {
+          cacheControl: "3600",
+          upsert: true, // Allow overwrite
+        });
 
-  if (uploadError) {
-    throw new Error(uploadError.message || "Failed to upload processed image");
+      if (uploadError) {
+        throw new Error(uploadError.message || "Failed to upload processed image");
+      }
+      uploadData = uploadResult;
+    }
+  } else {
+    // Upload processed image to Supabase Storage
+    const { data: uploadResult, error: uploadError } = await supabase.storage
+      .from("product-images")
+      .upload(newPath, file, {
+        cacheControl: "3600",
+        upsert: true, // Allow overwrite if file exists
+      });
+
+    if (uploadError) {
+      throw new Error(uploadError.message || "Failed to upload processed image");
+    }
+    uploadData = uploadResult;
   }
 
   // Store original path in metadata for undo (only if not already stored)
@@ -961,10 +993,10 @@ export async function removeBackgroundFromStack(stackId: string | number) {
     throw new Error("Stack not found or access denied");
   }
 
-  // Get all images in the stack
+  // Get all images in the stack with metadata
   const { data: images, error: imagesError } = await supabase
     .from("product_images")
-    .select("id, storage_path")
+    .select("id, storage_path, metadata")
     .eq("stack_id", stackId);
 
   if (imagesError) {
@@ -972,14 +1004,21 @@ export async function removeBackgroundFromStack(stackId: string | number) {
   }
 
   if (!images || images.length === 0) {
-    return { processed: 0, failed: 0 };
+    return { processed: 0, skipped: 0, failed: 0 };
   }
 
-  // Process each image
+  // Process each image (skip already processed ones)
   let processed = 0;
+  let skipped = 0;
   let failed = 0;
 
   for (const image of images) {
+    // Skip if already processed
+    if (image.metadata?.background_removed === true) {
+      skipped++;
+      continue;
+    }
+    
     try {
       await removeBackgroundFromImage(image.id);
       processed++;
@@ -989,5 +1028,5 @@ export async function removeBackgroundFromStack(stackId: string | number) {
     }
   }
 
-  return { processed, failed };
+  return { processed, skipped, failed };
 }
