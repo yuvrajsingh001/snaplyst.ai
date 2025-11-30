@@ -2,9 +2,8 @@ fastapi
 uvicorn[standard]
 python-dotenv
 pydantic
-rembg
+rembg[cpu]
 pillow
 numpy
 httpx
 python-multipart
-onnxruntime

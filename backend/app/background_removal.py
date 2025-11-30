@@ -41,10 +41,13 @@ async def remove_background(request: RemoveBackgroundRequest):
     
     Downloads image from URL, processes it, and returns base64 encoded PNG
     """
-    if remove is None or new_session is None:
+    if not REMBG_AVAILABLE:
+        error_msg = f"Background removal library not installed. Please install: pip install rembg[cpu]"
+        if 'import_error' in locals():
+            error_msg += f" (Import error: {import_error})"
         raise HTTPException(
             status_code=500,
-            detail="Background removal library not installed. Please install: pip install rembg[new]"
+            detail=error_msg
         )
     
     try:
@@ -85,10 +88,13 @@ async def remove_background_batch(image_urls: list[str]):
     Remove background from multiple images
     Returns base64 encoded images
     """
-    if remove is None or new_session is None:
+    if not REMBG_AVAILABLE:
+        error_msg = f"Background removal library not installed. Please install: pip install rembg[cpu]"
+        if 'import_error' in locals():
+            error_msg += f" (Import error: {import_error})"
         raise HTTPException(
             status_code=500,
-            detail="Background removal library not installed. Please install: pip install rembg[new]"
+            detail=error_msg
         )
     
     results = []
