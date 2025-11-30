@@ -18,6 +18,11 @@ allowed_origins_str = os.getenv(
 # Split by comma and strip whitespace
 allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
 
+# Always allow the production Vercel domain if not already included
+vercel_domain = "https://snaplyst-ai.vercel.app"
+if vercel_domain not in allowed_origins:
+    allowed_origins.append(vercel_domain)
+
 logger.info(f"CORS allowed origins: {allowed_origins}")
 
 app.add_middleware(
