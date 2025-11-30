@@ -894,9 +894,11 @@ export async function undoBackgroundRemoval(imageId: string | number) {
 
   // Update database to restore original path
   const updatedMetadata = { ...metadata };
+  const processedImagePath = metadata.processed_storage_path || image.storage_path;
   delete updatedMetadata.original_storage_path;
   delete updatedMetadata.background_removed;
   delete updatedMetadata.background_removed_at;
+  delete updatedMetadata.processed_storage_path;
 
   const { data: updatedImage, error: updateError } = await supabase
     .from("product_images")
@@ -912,12 +914,13 @@ export async function undoBackgroundRemoval(imageId: string | number) {
     throw new Error(updateError.message || "Failed to restore original image");
   }
 
-  // Optionally delete the processed image from storage (optional cleanup)
-  try {
-    await supabase.storage.from("product-images").remove([image.storage_path]);
-  } catch (e) {
-    // Ignore errors when deleting processed image
-    console.warn("Failed to delete processed image:", e);
+  // Delete the processed image from storage asynchronously (don't wait for it)
+  // This speeds up the undo operation - cleanup happens in the background
+  if (processedImagePath && processedImagePath !== originalPath) {
+    supabase.storage.from("product-images").remove([processedImagePath]).catch((e) => {
+      // Ignore errors when deleting processed image - it's just cleanup
+      console.warn("Failed to delete processed image (non-critical):", e);
+    });
   }
 
   return updatedImage;
