@@ -16,11 +16,17 @@ try:
     from rembg import remove
     from rembg.session_factory import new_session
     REMBG_AVAILABLE = True
+    import_error = None
 except ImportError as e:
     REMBG_AVAILABLE = False
     remove = None
     new_session = None
     import_error = str(e)
+except Exception as e:
+    REMBG_AVAILABLE = False
+    remove = None
+    new_session = None
+    import_error = f"Unexpected error: {str(e)}"
 
 router = APIRouter(prefix="/api/background-removal")
 

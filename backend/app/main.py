@@ -31,11 +31,14 @@ app.add_middleware(
 
 # Try to import background removal router, but don't fail if it's not available
 try:
-    from .background_removal import router as background_removal_router
+    from .background_removal import router as background_removal_router, REMBG_AVAILABLE, import_error
     app.include_router(background_removal_router)
-    logger.info("Background removal router loaded successfully")
+    if REMBG_AVAILABLE:
+        logger.info("Background removal router loaded successfully")
+    else:
+        logger.warning(f"Background removal router loaded but rembg unavailable: {import_error}")
 except Exception as e:
-    logger.error(f"Failed to load background removal router: {e}")
+    logger.error(f"Failed to load background removal router: {e}", exc_info=True)
     # Create a dummy router to prevent 404s
     from fastapi import APIRouter
     dummy_router = APIRouter(prefix="/api/background-removal")
@@ -49,9 +52,15 @@ except Exception as e:
 
 @app.get("/health")
 def health_check():
+    try:
+        from .background_removal import REMBG_AVAILABLE, import_error
+        bg_status = "available" if REMBG_AVAILABLE else f"unavailable: {import_error}"
+    except:
+        bg_status = "unavailable: import failed"
+    
     return {
         "status": "ok",
         "cors_origins": allowed_origins,
-        "background_removal": "available" if "background_removal_router" in locals() else "unavailable"
+        "background_removal": bg_status
     }
 
