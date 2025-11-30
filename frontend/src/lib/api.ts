@@ -766,7 +766,7 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     throw new Error("Failed to get image URL");
   }
 
-  // Call backend to process image
+  // Call backend to process and upload image directly
   const backendUrl = process.env.NEXT_PUBLIC_API_URL;
   
   if (!backendUrl || backendUrl === "http://localhost:8000") {
@@ -777,12 +777,16 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     );
   }
 
+  // Get original path (for undo)
+  const originalPath = metadata.original_storage_path || image.storage_path;
+
   let response: Response;
   try {
     // Background removal can take 30-60 seconds, so set a longer timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
     
+    // Backend handles download, processing, and upload - we just pass the info
     response = await fetch(`${backendUrl}/api/background-removal/remove`, {
       method: "POST",
       headers: {
@@ -790,6 +794,8 @@ export async function removeBackgroundFromImage(imageId: string | number) {
       },
       body: JSON.stringify({
         image_url: urlData.publicUrl,
+        storage_path: originalPath,
+        user_id: user.id,
       }),
       signal: controller.signal,
     });
@@ -814,78 +820,22 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     throw new Error(error.detail || `Backend returned error: ${response.status} ${response.statusText}`);
   }
 
-  const { processed_image_base64 } = await response.json();
-
-  // Convert base64 to blob
-  const base64Data = processed_image_base64.replace(/^data:image\/\w+;base64,/, "");
-  const binaryData = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
-  const blob = new Blob([binaryData], { type: "image/png" });
-  const file = new File([blob], `bg_removed_${Date.now()}.png`, { type: "image/png" });
-
-  // Generate new storage path (use original path from metadata if available)
-  const originalPath = metadata.original_storage_path || image.storage_path;
-  const pathParts = originalPath.split("/");
-  const filename = pathParts[pathParts.length - 1];
-  const nameWithoutExt = filename.split(".")[0];
-  const newPath = `${pathParts.slice(0, -1).join("/")}/${nameWithoutExt}_bg_removed.png`;
-
-  // Check if processed image already exists in storage
-  const existingProcessedPath = metadata.processed_storage_path;
-  let uploadData;
-  
-  if (existingProcessedPath) {
-    // Verify the file exists
-    const { data: fileCheck } = await supabase.storage
-      .from("product-images")
-      .list(existingProcessedPath.split("/").slice(0, -1).join("/"), {
-        search: existingProcessedPath.split("/").pop(),
-      });
-    
-    if (fileCheck && fileCheck.length > 0) {
-      console.log("Reusing existing processed image, skipping upload");
-      uploadData = { path: existingProcessedPath };
-    } else {
-      // File doesn't exist, upload new one
-      const { data: uploadResult, error: uploadError } = await supabase.storage
-        .from("product-images")
-        .upload(newPath, file, {
-          cacheControl: "3600",
-          upsert: true, // Allow overwrite
-        });
-
-      if (uploadError) {
-        throw new Error(uploadError.message || "Failed to upload processed image");
-      }
-      uploadData = uploadResult;
-    }
-  } else {
-    // Upload processed image to Supabase Storage
-    const { data: uploadResult, error: uploadError } = await supabase.storage
-      .from("product-images")
-      .upload(newPath, file, {
-        cacheControl: "3600",
-        upsert: true, // Allow overwrite if file exists
-      });
-
-    if (uploadError) {
-      throw new Error(uploadError.message || "Failed to upload processed image");
-    }
-    uploadData = uploadResult;
-  }
+  // Backend returns the new storage path directly (no base64!)
+  const { processed_storage_path, original_storage_path } = await response.json();
 
   // Store original path in metadata for undo (only if not already stored)
   if (!metadata.original_storage_path) {
-    metadata.original_storage_path = originalPath;
+    metadata.original_storage_path = original_storage_path;
   }
   metadata.background_removed = true;
   metadata.background_removed_at = new Date().toISOString();
-  metadata.processed_storage_path = uploadData.path; // Store processed path for reference
+  metadata.processed_storage_path = processed_storage_path;
 
   // Update database record with new storage path
   const { data: updatedImage, error: updateError } = await supabase
     .from("product_images")
     .update({
-      storage_path: uploadData.path,
+      storage_path: processed_storage_path,
       metadata: metadata,
     })
     .eq("id", imageId)
@@ -893,8 +843,6 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     .single();
 
   if (updateError) {
-    // If update fails, try to delete the uploaded file
-    await supabase.storage.from("product-images").remove([uploadData.path]);
     throw new Error(updateError.message || "Failed to update image record");
   }
 
