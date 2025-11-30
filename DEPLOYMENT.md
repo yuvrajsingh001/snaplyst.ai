@@ -43,8 +43,14 @@ When deploying to Vercel, **only the frontend (Next.js) will be deployed**. The 
 9. Get your backend URL from the "Settings" → "Domains" section
 
 **Environment Variables:**
-- `ALLOWED_ORIGINS` - Add your Vercel frontend URL (e.g., `https://your-app.vercel.app`)
-- No other variables needed for basic setup
+
+In Railway, go to your service → Variables tab and add:
+
+- `ALLOWED_ORIGINS` - Your Vercel frontend URL(s), comma-separated
+  - Example: `https://snaplyst-ai.vercel.app,https://your-custom-domain.com`
+  - For local development, include: `http://localhost:3000,http://127.0.0.1:3000,https://snaplyst-ai.vercel.app`
+
+**Important:** After adding `ALLOWED_ORIGINS`, Railway will automatically redeploy. Make sure the value matches your exact frontend URL.
 
 **Note:** The Dockerfile is intentionally ignored via `.dockerignore` to force Railway to use the optimized nixpacks build, which handles large dependencies better.
 
