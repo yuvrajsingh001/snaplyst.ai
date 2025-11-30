@@ -99,19 +99,20 @@ async def remove_background(request: RemoveBackgroundRequest):
         
         # Upload processed image directly to Supabase Storage
         # Use from_() method (with underscore) to avoid Python keyword conflict
-        upload_result = supabase.storage.from_("product-images").upload(
-            new_path,
-            processed_image_bytes,
-            file_options={
-                "content-type": "image/png",
-                "upsert": "true"
-            }
-        )
-        
-        if upload_result.error:
+        # Supabase raises exceptions on error, so wrap in try-except
+        try:
+            upload_result = supabase.storage.from_("product-images").upload(
+                new_path,
+                processed_image_bytes,
+                file_options={
+                    "content-type": "image/png",
+                    "upsert": "true"
+                }
+            )
+        except Exception as upload_error:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to upload processed image: {upload_result.error.message}"
+                detail=f"Failed to upload processed image: {str(upload_error)}"
             )
         
         return {
