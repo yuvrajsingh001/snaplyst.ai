@@ -744,20 +744,38 @@ export async function removeBackgroundFromImage(imageId: string | number) {
   }
 
   // Call backend to process image
-  const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-  const response = await fetch(`${backendUrl}/api/background-removal/remove`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      image_url: urlData.publicUrl,
-    }),
-  });
+  const backendUrl = process.env.NEXT_PUBLIC_API_URL;
+  
+  if (!backendUrl || backendUrl === "http://localhost:8000") {
+    throw new Error(
+      "Backend API URL not configured. " +
+      "Please set NEXT_PUBLIC_API_URL environment variable to your backend URL " +
+      "(e.g., https://your-backend.railway.app)"
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${backendUrl}/api/background-removal/remove`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        image_url: urlData.publicUrl,
+      }),
+    });
+  } catch (fetchError) {
+    throw new Error(
+      `Failed to connect to backend at ${backendUrl}. ` +
+      `Please check that the backend is deployed and accessible. ` +
+      `Error: ${fetchError instanceof Error ? fetchError.message : "Unknown error"}`
+    );
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Failed to process image" }));
-    throw new Error(error.detail || "Failed to process image");
+    throw new Error(error.detail || `Backend returned error: ${response.status} ${response.statusText}`);
   }
 
   const { processed_image_base64 } = await response.json();
