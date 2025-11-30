@@ -1,4 +1,6 @@
-# Backend Setup
+# Backend - Background Removal Service
+
+**Note:** The backend is required for background removal functionality. It processes images server-side using Python ML libraries.
 
 ## Prerequisites
 - Python 3.11+
@@ -22,15 +24,7 @@
    pip install -r requirements.txt
    ```
 
-3. Set up environment variables:
-   Create a `.env` file in the backend directory with:
-   ```
-   SUPABASE_URL=your_supabase_url
-   SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-   DATABASE_URL=your_database_url
-   ```
-
-## Running the Server
+## Running the Server (Optional)
 
 Start the development server:
 ```bash
@@ -42,3 +36,31 @@ The API will be available at: http://localhost:8000
 Health check endpoint: http://localhost:8000/health
 
 API docs: http://localhost:8000/docs
+
+## Deployment
+
+The backend needs to be deployed separately from the frontend. See [DEPLOYMENT.md](../DEPLOYMENT.md) for detailed deployment instructions.
+
+### Quick Deploy Options:
+
+**Railway (Recommended):**
+1. Connect GitHub repository
+2. Add Python service
+3. Set root directory to `backend/`
+4. Railway auto-detects and deploys
+
+**Render:**
+1. Create Web Service
+2. Build: `cd backend && pip install -r requirements.txt`
+3. Start: `cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+### Environment Variables:
+
+Set `ALLOWED_ORIGINS` to include your frontend URL:
+```env
+ALLOWED_ORIGINS=https://your-app.vercel.app,https://your-custom-domain.com
+```
+
+### CORS Configuration:
+
+The backend automatically reads `ALLOWED_ORIGINS` environment variable. Defaults to localhost for development.

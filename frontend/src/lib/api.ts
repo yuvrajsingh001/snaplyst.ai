@@ -697,3 +697,241 @@ export async function deleteImage(imageId: string | number) {
 
   return { success: true };
 }
+
+/**
+ * Remove background from an image
+ * Processes image via backend and uploads processed version to Supabase
+ */
+export async function removeBackgroundFromImage(imageId: string | number) {
+  const user = await getCurrentUser();
+  
+  // Get the image to verify ownership and get storage path
+  const { data: image, error: imageError } = await supabase
+    .from("product_images")
+    .select("storage_path, stack_id, metadata")
+    .eq("id", imageId)
+    .maybeSingle();
+
+  if (imageError) {
+    throw new Error(imageError.message || "Failed to fetch image");
+  }
+
+  if (!image) {
+    throw new Error("Image not found");
+  }
+
+  // Verify the stack belongs to the user (if image is in a stack)
+  if (image.stack_id) {
+    const { data: stack, error: stackError } = await supabase
+      .from("product_stacks")
+      .select("id, owner_id")
+      .eq("id", image.stack_id)
+      .eq("owner_id", user.id)
+      .single();
+
+    if (stackError || !stack) {
+      throw new Error("Access denied");
+    }
+  }
+
+  // Get public URL for the image
+  const { data: urlData } = supabase.storage
+    .from("product-images")
+    .getPublicUrl(image.storage_path);
+
+  if (!urlData?.publicUrl) {
+    throw new Error("Failed to get image URL");
+  }
+
+  // Call backend to process image
+  const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const response = await fetch(`${backendUrl}/api/background-removal/remove`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      image_url: urlData.publicUrl,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Failed to process image" }));
+    throw new Error(error.detail || "Failed to process image");
+  }
+
+  const { processed_image_base64 } = await response.json();
+
+  // Convert base64 to blob
+  const base64Data = processed_image_base64.replace(/^data:image\/\w+;base64,/, "");
+  const binaryData = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+  const blob = new Blob([binaryData], { type: "image/png" });
+  const file = new File([blob], `bg_removed_${Date.now()}.png`, { type: "image/png" });
+
+  // Generate new storage path
+  const originalPath = image.storage_path;
+  const pathParts = originalPath.split("/");
+  const filename = pathParts[pathParts.length - 1];
+  const nameWithoutExt = filename.split(".")[0];
+  const newPath = `${pathParts.slice(0, -1).join("/")}/${nameWithoutExt}_bg_removed.png`;
+
+  // Upload processed image to Supabase Storage
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from("product-images")
+    .upload(newPath, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
+
+  if (uploadError) {
+    throw new Error(uploadError.message || "Failed to upload processed image");
+  }
+
+  // Store original path in metadata for undo
+  const metadata = image.metadata || {};
+  metadata.original_storage_path = originalPath;
+  metadata.background_removed = true;
+  metadata.background_removed_at = new Date().toISOString();
+
+  // Update database record with new storage path
+  const { data: updatedImage, error: updateError } = await supabase
+    .from("product_images")
+    .update({
+      storage_path: uploadData.path,
+      metadata: metadata,
+    })
+    .eq("id", imageId)
+    .select()
+    .single();
+
+  if (updateError) {
+    // If update fails, try to delete the uploaded file
+    await supabase.storage.from("product-images").remove([uploadData.path]);
+    throw new Error(updateError.message || "Failed to update image record");
+  }
+
+  return updatedImage;
+}
+
+/**
+ * Undo background removal - restore original image
+ */
+export async function undoBackgroundRemoval(imageId: string | number) {
+  const user = await getCurrentUser();
+
+  // Get the image
+  const { data: image, error: imageError } = await supabase
+    .from("product_images")
+    .select("storage_path, stack_id, metadata")
+    .eq("id", imageId)
+    .maybeSingle();
+
+  if (imageError) {
+    throw new Error(imageError.message || "Failed to fetch image");
+  }
+
+  if (!image) {
+    throw new Error("Image not found");
+  }
+
+  // Verify the stack belongs to the user (if image is in a stack)
+  if (image.stack_id) {
+    const { data: stack, error: stackError } = await supabase
+      .from("product_stacks")
+      .select("id, owner_id")
+      .eq("id", image.stack_id)
+      .eq("owner_id", user.id)
+      .single();
+
+    if (stackError || !stack) {
+      throw new Error("Access denied");
+    }
+  }
+
+  // Check if original path exists in metadata
+  const metadata = image.metadata || {};
+  const originalPath = metadata.original_storage_path;
+
+  if (!originalPath) {
+    throw new Error("No original image found to restore");
+  }
+
+  // Update database to restore original path
+  const updatedMetadata = { ...metadata };
+  delete updatedMetadata.original_storage_path;
+  delete updatedMetadata.background_removed;
+  delete updatedMetadata.background_removed_at;
+
+  const { data: updatedImage, error: updateError } = await supabase
+    .from("product_images")
+    .update({
+      storage_path: originalPath,
+      metadata: updatedMetadata,
+    })
+    .eq("id", imageId)
+    .select()
+    .single();
+
+  if (updateError) {
+    throw new Error(updateError.message || "Failed to restore original image");
+  }
+
+  // Optionally delete the processed image from storage (optional cleanup)
+  try {
+    await supabase.storage.from("product-images").remove([image.storage_path]);
+  } catch (e) {
+    // Ignore errors when deleting processed image
+    console.warn("Failed to delete processed image:", e);
+  }
+
+  return updatedImage;
+}
+
+/**
+ * Remove background from all images in a stack
+ */
+export async function removeBackgroundFromStack(stackId: string | number) {
+  const user = await getCurrentUser();
+
+  // Verify the stack belongs to the user
+  const { data: stack, error: stackError } = await supabase
+    .from("product_stacks")
+    .select("id, owner_id")
+    .eq("id", stackId)
+    .eq("owner_id", user.id)
+    .single();
+
+  if (stackError || !stack) {
+    throw new Error("Stack not found or access denied");
+  }
+
+  // Get all images in the stack
+  const { data: images, error: imagesError } = await supabase
+    .from("product_images")
+    .select("id, storage_path")
+    .eq("stack_id", stackId);
+
+  if (imagesError) {
+    throw new Error(imagesError.message || "Failed to fetch stack images");
+  }
+
+  if (!images || images.length === 0) {
+    return { processed: 0, failed: 0 };
+  }
+
+  // Process each image
+  let processed = 0;
+  let failed = 0;
+
+  for (const image of images) {
+    try {
+      await removeBackgroundFromImage(image.id);
+      processed++;
+    } catch (error) {
+      console.error(`Failed to process image ${image.id}:`, error);
+      failed++;
+    }
+  }
+
+  return { processed, failed };
+}

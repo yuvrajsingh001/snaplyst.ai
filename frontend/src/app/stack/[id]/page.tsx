@@ -11,6 +11,9 @@ import {
   useStack,
   useStackImagesWithUrls,
   useUpdateStack,
+  useRemoveBackground,
+  useUndoBackgroundRemoval,
+  useRemoveBackgroundFromStack,
 } from "@/lib/hooks";
 
 export default function StackDetailPage() {
@@ -42,6 +45,9 @@ export default function StackDetailPage() {
 
   // Mutations
   const updateStackMutation = useUpdateStack();
+  const removeBackgroundMutation = useRemoveBackground();
+  const undoBackgroundRemovalMutation = useUndoBackgroundRemoval();
+  const removeBackgroundFromStackMutation = useRemoveBackgroundFromStack();
 
   useEffect(() => {
     const checkSession = async () => {
@@ -218,25 +224,100 @@ export default function StackDetailPage() {
         {/* Horizontal Image Gallery */}
         {imagesWithUrls.length > 0 ? (
           <div className="mb-8">
-            <h2 className="mb-4 text-lg font-semibold text-black dark:text-zinc-50">
-              Images ({imagesWithUrls.length})
-            </h2>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-black dark:text-zinc-50">
+                Images ({imagesWithUrls.length})
+              </h2>
+              <button
+                onClick={async () => {
+                  if (!stackId) return;
+                  try {
+                    setError("");
+                    await removeBackgroundFromStackMutation.mutateAsync(stackId);
+                    setSaveSuccess(true);
+                    setTimeout(() => setSaveSuccess(false), 3000);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Failed to remove backgrounds");
+                  }
+                }}
+                disabled={removeBackgroundFromStackMutation.isPending}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {removeBackgroundFromStackMutation.isPending
+                  ? "Processing..."
+                  : "Remove Backgrounds from All"}
+              </button>
+            </div>
             <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-zinc-300 scrollbar-track-zinc-100 dark:scrollbar-thumb-zinc-700 dark:scrollbar-track-zinc-800">
               <div className="flex gap-4 pb-4" style={{ minWidth: "max-content" }}>
-                {imagesWithUrls.map((img, index) => (
-                  <div
-                    key={img.id || index}
-                    className="flex-shrink-0"
-                  >
-                    <div className="relative h-64 w-64 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm hover:shadow-md transition-shadow dark:border-zinc-800 dark:bg-zinc-800">
-                      <img
-                        src={img.publicUrl}
-                        alt={`Stack image ${index + 1}`}
-                        className="h-full w-full object-cover"
-                      />
+                {imagesWithUrls.map((img, index) => {
+                  const hasBackgroundRemoved = img.metadata?.background_removed === true;
+                  const isProcessing = removeBackgroundMutation.isPending && removeBackgroundMutation.variables?.toString() === img.id?.toString();
+                  const isUndoing = undoBackgroundRemovalMutation.isPending && undoBackgroundRemovalMutation.variables?.toString() === img.id?.toString();
+
+                  return (
+                    <div
+                      key={img.id || index}
+                      className="flex-shrink-0"
+                    >
+                      <div className="relative h-64 w-64 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 shadow-sm hover:shadow-md transition-shadow dark:border-zinc-800 dark:bg-zinc-800">
+                        <img
+                          src={img.publicUrl}
+                          alt={`Stack image ${index + 1}`}
+                          className="h-full w-full object-cover"
+                        />
+                        {/* Overlay with action buttons */}
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 hover:opacity-100 transition-opacity">
+                          <div className="flex flex-col gap-2">
+                            {!hasBackgroundRemoved ? (
+                              <button
+                                onClick={async () => {
+                                  if (!img.id) return;
+                                  try {
+                                    setError("");
+                                    await removeBackgroundMutation.mutateAsync(img.id);
+                                    setSaveSuccess(true);
+                                    setTimeout(() => setSaveSuccess(false), 3000);
+                                  } catch (err) {
+                                    setError(err instanceof Error ? err.message : "Failed to remove background");
+                                  }
+                                }}
+                                disabled={isProcessing || isUndoing}
+                                className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                              >
+                                {isProcessing ? "Processing..." : "Remove Background"}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={async () => {
+                                  if (!img.id) return;
+                                  try {
+                                    setError("");
+                                    await undoBackgroundRemovalMutation.mutateAsync(img.id);
+                                    setSaveSuccess(true);
+                                    setTimeout(() => setSaveSuccess(false), 3000);
+                                  } catch (err) {
+                                    setError(err instanceof Error ? err.message : "Failed to undo");
+                                  }
+                                }}
+                                disabled={isProcessing || isUndoing}
+                                className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                              >
+                                {isUndoing ? "Restoring..." : "Undo"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {/* Badge for processed images */}
+                        {hasBackgroundRemoved && (
+                          <div className="absolute top-2 right-2 rounded-full bg-purple-600 px-2 py-1 text-xs font-medium text-white">
+                            BG Removed
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

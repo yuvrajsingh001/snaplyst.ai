@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { deleteImage, createProductImage, uploadToSupabaseStorage } from "../api";
+import { deleteImage, createProductImage, uploadToSupabaseStorage, removeBackgroundFromImage, undoBackgroundRemoval, removeBackgroundFromStack } from "../api";
 import type { User } from "@supabase/supabase-js";
 
 /**
@@ -53,6 +53,82 @@ export function useCreateProductImage() {
       if (user) {
         queryClient.invalidateQueries({ queryKey: ["unsortedImages", user.id] });
         queryClient.invalidateQueries({ queryKey: ["unsortedImagesWithUrls", user.id] });
+      }
+    },
+  });
+}
+
+/**
+ * Hook for removing background from an image
+ */
+export function useRemoveBackground() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: removeBackgroundFromImage,
+    onSuccess: async (data, imageId) => {
+      // Invalidate all image-related queries
+      queryClient.invalidateQueries({ queryKey: ["unsortedImages"] });
+      queryClient.invalidateQueries({ queryKey: ["unsortedImagesWithUrls"] });
+      queryClient.invalidateQueries({ queryKey: ["stackImages"] });
+      queryClient.invalidateQueries({ queryKey: ["stackImagesWithUrls"] });
+      
+      const {
+        data: { user },
+      } = await import("../supabaseClient").then((m) => m.supabase.auth.getUser());
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: ["stacks", user.id] });
+        queryClient.invalidateQueries({ queryKey: ["stacksWithHeaders", user.id] });
+      }
+    },
+  });
+}
+
+/**
+ * Hook for undoing background removal
+ */
+export function useUndoBackgroundRemoval() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: undoBackgroundRemoval,
+    onSuccess: async (data, imageId) => {
+      // Invalidate all image-related queries
+      queryClient.invalidateQueries({ queryKey: ["unsortedImages"] });
+      queryClient.invalidateQueries({ queryKey: ["unsortedImagesWithUrls"] });
+      queryClient.invalidateQueries({ queryKey: ["stackImages"] });
+      queryClient.invalidateQueries({ queryKey: ["stackImagesWithUrls"] });
+      
+      const {
+        data: { user },
+      } = await import("../supabaseClient").then((m) => m.supabase.auth.getUser());
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: ["stacks", user.id] });
+        queryClient.invalidateQueries({ queryKey: ["stacksWithHeaders", user.id] });
+      }
+    },
+  });
+}
+
+/**
+ * Hook for removing background from all images in a stack
+ */
+export function useRemoveBackgroundFromStack() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: removeBackgroundFromStack,
+    onSuccess: async (data, stackId) => {
+      // Invalidate all image-related queries
+      queryClient.invalidateQueries({ queryKey: ["stackImages", stackId] });
+      queryClient.invalidateQueries({ queryKey: ["stackImagesWithUrls", stackId] });
+      
+      const {
+        data: { user },
+      } = await import("../supabaseClient").then((m) => m.supabase.auth.getUser());
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: ["stacks", user.id] });
+        queryClient.invalidateQueries({ queryKey: ["stacksWithHeaders", user.id] });
       }
     },
   });

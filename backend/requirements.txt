@@ -1,8 +1,9 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
 python-dotenv
-psycopg2-binary
 pydantic
-passlib[bcrypt]
-supabase
+backgroundremover
+pillow
+numpy
+httpx
+python-multipart
