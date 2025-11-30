@@ -720,6 +720,29 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     throw new Error("Image not found");
   }
 
+  // Check if background was already removed - avoid reprocessing
+  const metadata = image.metadata || {};
+  if (metadata.background_removed === true) {
+    // Check if the processed image file still exists in storage
+    const { data: fileExists } = await supabase.storage
+      .from("product-images")
+      .list(image.storage_path.split("/").slice(0, -1).join("/"), {
+        search: image.storage_path.split("/").pop(),
+      });
+    
+    // If processed image exists, return early (no need to reprocess)
+    if (fileExists && fileExists.length > 0) {
+      console.log("Background already removed for this image, skipping reprocessing");
+      return image; // Return existing image record
+    }
+    
+    // If metadata says it's processed but file doesn't exist, clear the flag and reprocess
+    console.log("Processed image file not found, reprocessing...");
+    metadata.background_removed = false;
+    delete metadata.original_storage_path;
+    delete metadata.background_removed_at;
+  }
+
   // Verify the stack belongs to the user (if image is in a stack)
   if (image.stack_id) {
     const { data: stack, error: stackError } = await supabase
@@ -818,11 +841,13 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     throw new Error(uploadError.message || "Failed to upload processed image");
   }
 
-  // Store original path in metadata for undo
-  const metadata = image.metadata || {};
-  metadata.original_storage_path = originalPath;
+  // Store original path in metadata for undo (only if not already stored)
+  if (!metadata.original_storage_path) {
+    metadata.original_storage_path = originalPath;
+  }
   metadata.background_removed = true;
   metadata.background_removed_at = new Date().toISOString();
+  metadata.processed_storage_path = uploadData.path; // Store processed path for reference
 
   // Update database record with new storage path
   const { data: updatedImage, error: updateError } = await supabase
