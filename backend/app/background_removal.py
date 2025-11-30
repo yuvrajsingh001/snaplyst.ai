@@ -15,9 +15,12 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 try:
     from rembg import remove
     from rembg.session_factory import new_session
-except ImportError:
+    REMBG_AVAILABLE = True
+except ImportError as e:
+    REMBG_AVAILABLE = False
     remove = None
     new_session = None
+    import_error = str(e)
 
 router = APIRouter(prefix="/api/background-removal")
 
