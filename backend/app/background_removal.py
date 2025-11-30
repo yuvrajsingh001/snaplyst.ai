@@ -98,9 +98,8 @@ async def remove_background(request: RemoveBackgroundRequest):
         new_path = f"{'/'.join(path_parts[:-1])}/{name_without_ext}_bg_removed.png"
         
         # Upload processed image directly to Supabase Storage
-        # Use getattr to access 'from' method (since 'from' is a Python keyword)
-        storage_bucket = getattr(supabase.storage, "from")("product-images")
-        upload_result = storage_bucket.upload(
+        # Use from_() method (with underscore) to avoid Python keyword conflict
+        upload_result = supabase.storage.from_("product-images").upload(
             new_path,
             processed_image_bytes,
             file_options={
