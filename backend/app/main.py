@@ -60,8 +60,9 @@ def health_check():
     try:
         from .background_removal import REMBG_AVAILABLE, import_error
         bg_status = "available" if REMBG_AVAILABLE else f"unavailable: {import_error}"
-    except:
-        bg_status = "unavailable: import failed"
+    except Exception as e:
+        bg_status = f"unavailable: module import failed - {str(e)}"
+        logger.error(f"Failed to import background_removal module: {e}", exc_info=True)
     
     return {
         "status": "ok",

@@ -3,6 +3,7 @@ uvicorn[standard]
 python-dotenv
 pydantic
 rembg[cpu]
+onnxruntime
 pillow
 numpy
 httpx

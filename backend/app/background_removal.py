@@ -13,6 +13,8 @@ import base64
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 try:
+    # Try importing onnxruntime first to get better error messages
+    import onnxruntime
     from rembg import remove
     from rembg.session_factory import new_session
     REMBG_AVAILABLE = True
@@ -21,7 +23,7 @@ except ImportError as e:
     REMBG_AVAILABLE = False
     remove = None
     new_session = None
-    import_error = str(e)
+    import_error = f"ImportError: {str(e)}"
 except Exception as e:
     REMBG_AVAILABLE = False
     remove = None
