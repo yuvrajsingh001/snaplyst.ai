@@ -14,9 +14,11 @@ import base64
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 try:
-    from backgroundremover.bg import remove
+    from rembg import remove
+    from rembg.session_factory import new_session
 except ImportError:
     remove = None
+    new_session = None
 
 router = APIRouter(prefix="/api/background-removal")
 
@@ -37,10 +39,10 @@ async def remove_background(request: RemoveBackgroundRequest):
     
     Downloads image from URL, processes it, and returns base64 encoded PNG
     """
-    if remove is None:
+    if remove is None or new_session is None:
         raise HTTPException(
             status_code=500,
-            detail="Background removal library not installed. Please install: pip install backgroundremover"
+            detail="Background removal library not installed. Please install: pip install rembg[new]"
         )
     
     try:
@@ -55,27 +57,17 @@ async def remove_background(request: RemoveBackgroundRequest):
         img_np = np.asarray(img)
         img_np = img_np.copy()
         
+        # Remove background using rembg (lighter than backgroundremover)
+        # Convert PIL Image to bytes for rembg
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        
         # Remove background
-        result = remove(
-            data=img_np,
-            model_name='u2net',
-            alpha_matting=True
-        )
+        output_bytes = remove(img_bytes.read(), session=new_session('u2net'))
+        result_img_pil = Image.open(BytesIO(output_bytes)).convert("RGBA")
         
-        # Convert result to PIL Image
-        if isinstance(result, (memoryview, bytes)):
-            if isinstance(result, memoryview):
-                result_bytes = bytes(result)
-            else:
-                result_bytes = result
-            result_img_pil = Image.open(BytesIO(result_bytes))
-        elif isinstance(result, np.ndarray):
-            result_img_pil = Image.fromarray(result)
-        elif isinstance(result, Image.Image):
-            result_img_pil = result
-        else:
-            raise TypeError(f"Unexpected result type: {type(result)}")
-        
+        # result_img_pil is already a PIL Image with transparency
         # Convert to PNG bytes (supports transparency)
         output_buffer = BytesIO()
         result_img_pil.save(output_buffer, format='PNG')
@@ -101,10 +93,10 @@ async def remove_background_batch(image_urls: list[str]):
     Remove background from multiple images
     Returns base64 encoded images
     """
-    if remove is None:
+    if remove is None or new_session is None:
         raise HTTPException(
             status_code=500,
-            detail="Background removal library not installed"
+            detail="Background removal library not installed. Please install: pip install rembg[new]"
         )
     
     results = []
@@ -118,34 +110,20 @@ async def remove_background_batch(image_urls: list[str]):
             
             # Process image
             img = Image.open(BytesIO(image_data)).convert("RGB")
-            img_np = np.asarray(img)
-            img_np = img_np.copy()
             
-            result = remove(
-                data=img_np,
-                model_name='u2net',
-                alpha_matting=True
-            )
+            # Convert PIL Image to bytes for rembg
+            img_bytes = BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
             
-            # Convert to PIL Image
-            if isinstance(result, (memoryview, bytes)):
-                if isinstance(result, memoryview):
-                    result_bytes = bytes(result)
-                else:
-                    result_bytes = result
-                result_img_pil = Image.open(BytesIO(result_bytes))
-            elif isinstance(result, np.ndarray):
-                result_img_pil = Image.fromarray(result)
-            elif isinstance(result, Image.Image):
-                result_img_pil = result
-            else:
-                raise TypeError(f"Unexpected result type: {type(result)}")
+            # Remove background
+            output_bytes = remove(img_bytes.read(), session=new_session('u2net'))
+            result_img_pil = Image.open(BytesIO(output_bytes)).convert("RGBA")
             
             # Convert to base64
             output_buffer = BytesIO()
             result_img_pil.save(output_buffer, format='PNG')
             output_buffer.seek(0)
-            import base64
             base64_data = base64.b64encode(output_buffer.read()).decode('utf-8')
             
             results.append({
