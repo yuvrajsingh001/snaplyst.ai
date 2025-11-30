@@ -38,12 +38,15 @@ When deploying to Vercel, **only the frontend (Next.js) will be deployed**. The 
 4. Click "Add Service" → "GitHub Repo"
 5. Select your repository
 6. **IMPORTANT:** In the service settings, go to "Settings" → "Root Directory" and set it to `backend`
-7. Railway will auto-detect Python and deploy
-8. Get your backend URL from the "Settings" → "Domains" section
+7. **IMPORTANT:** Railway might detect Dockerfile - if build fails due to size, delete/rename the Dockerfile or Railway will use nixpacks.toml instead
+8. Railway will auto-detect Python and deploy (using nixpacks.toml)
+9. Get your backend URL from the "Settings" → "Domains" section
 
 **Environment Variables:**
-- No special variables needed for basic setup
-- CORS will be configured automatically
+- `ALLOWED_ORIGINS` - Add your Vercel frontend URL (e.g., `https://your-app.vercel.app`)
+- No other variables needed for basic setup
+
+**Note:** The Dockerfile is intentionally ignored via `.dockerignore` to force Railway to use the optimized nixpacks build, which handles large dependencies better.
 
 ### Option 2: Render
 

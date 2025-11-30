@@ -25,6 +25,9 @@ backend/.env
 **/build/
 **/*.egg-info/
 
+# Docker (don't use Dockerfile for Railway)
+backend/Dockerfile
+
 # Node.js (Frontend)
 frontend/node_modules/
 frontend/.pnp
