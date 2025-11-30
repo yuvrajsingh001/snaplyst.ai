@@ -722,22 +722,65 @@ export async function removeBackgroundFromImage(imageId: string | number) {
 
   // Check if background was already removed - avoid reprocessing
   const metadata = image.metadata || {};
-  if (metadata.background_removed === true) {
+  const processedStoragePath = metadata.processed_storage_path;
+  
+  // Check if we have a processed file path (either currently active or from previous processing)
+  if (processedStoragePath) {
     // Check if the processed image file still exists in storage
-    const { data: fileExists } = await supabase.storage
+    const pathParts = processedStoragePath.split("/");
+    const folderPath = pathParts.slice(0, -1).join("/");
+    const fileName = pathParts[pathParts.length - 1];
+    
+    const { data: fileList } = await supabase.storage
       .from("product-images")
-      .list(image.storage_path.split("/").slice(0, -1).join("/"), {
-        search: image.storage_path.split("/").pop(),
+      .list(folderPath, {
+        search: fileName,
       });
     
-    // If processed image exists, return early (no need to reprocess)
-    if (fileExists && fileExists.length > 0) {
-      console.log("Background already removed for this image, skipping reprocessing");
-      return image; // Return existing image record
+    // If processed image exists, restore it (even if background_removed flag was cleared by undo)
+    if (fileList && fileList.length > 0) {
+      // Check if it's already active
+      if (metadata.background_removed === true && image.storage_path === processedStoragePath) {
+        console.log("Background already removed for this image, skipping reprocessing");
+        return image; // Return existing image record
+      }
+      
+      // Restore the processed image (user clicked remove background again after undo)
+      console.log("Restoring existing processed image from storage");
+      
+      // Restore metadata
+      if (!metadata.original_storage_path) {
+        metadata.original_storage_path = image.storage_path;
+      }
+      metadata.background_removed = true;
+      metadata.background_removed_at = metadata.background_removed_at || new Date().toISOString();
+      metadata.processed_storage_path = processedStoragePath;
+      
+      // Update database to point back to processed image
+      const { data: restoredImage, error: restoreError } = await supabase
+        .from("product_images")
+        .update({
+          storage_path: processedStoragePath,
+          metadata: metadata,
+        })
+        .eq("id", imageId)
+        .select()
+        .single();
+      
+      if (restoreError) {
+        throw new Error(restoreError.message || "Failed to restore processed image");
+      }
+      
+      return restoredImage;
     }
     
     // If metadata says it's processed but file doesn't exist, clear the flag and reprocess
     console.log("Processed image file not found, reprocessing...");
+    delete metadata.processed_storage_path;
+  }
+  
+  // If background_removed flag is set but no processed_storage_path, clear it
+  if (metadata.background_removed === true && !processedStoragePath) {
     metadata.background_removed = false;
     delete metadata.original_storage_path;
     delete metadata.background_removed_at;
@@ -895,10 +938,13 @@ export async function undoBackgroundRemoval(imageId: string | number) {
   // Update database to restore original path
   const updatedMetadata = { ...metadata };
   const processedImagePath = metadata.processed_storage_path || image.storage_path;
+  
+  // Keep processed_storage_path in metadata so we can restore it later without reprocessing
+  // Only delete the flags, not the path itself
   delete updatedMetadata.original_storage_path;
   delete updatedMetadata.background_removed;
   delete updatedMetadata.background_removed_at;
-  delete updatedMetadata.processed_storage_path;
+  // Keep processed_storage_path for potential future restoration
 
   const { data: updatedImage, error: updateError } = await supabase
     .from("product_images")
