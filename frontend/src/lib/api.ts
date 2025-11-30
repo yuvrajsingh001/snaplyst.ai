@@ -756,6 +756,10 @@ export async function removeBackgroundFromImage(imageId: string | number) {
 
   let response: Response;
   try {
+    // Background removal can take 30-60 seconds, so set a longer timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
+    
     response = await fetch(`${backendUrl}/api/background-removal/remove`, {
       method: "POST",
       headers: {
@@ -764,8 +768,17 @@ export async function removeBackgroundFromImage(imageId: string | number) {
       body: JSON.stringify({
         image_url: urlData.publicUrl,
       }),
+      signal: controller.signal,
     });
+    
+    clearTimeout(timeoutId);
   } catch (fetchError) {
+    if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+      throw new Error(
+        `Request timed out after 2 minutes. Background removal is taking longer than expected. ` +
+        `This might be due to a large image or slow processing. Please try again with a smaller image.`
+      );
+    }
     throw new Error(
       `Failed to connect to backend at ${backendUrl}. ` +
       `Please check that the backend is deployed and accessible. ` +

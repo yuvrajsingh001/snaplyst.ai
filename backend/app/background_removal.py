@@ -58,8 +58,8 @@ async def remove_background(request: RemoveBackgroundRequest):
     
     try:
         # Download image from URL
-        async with httpx.AsyncClient() as client:
-            response = await client.get(request.image_url, timeout=30.0)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(request.image_url, timeout=60.0)
             response.raise_for_status()
             image_data = response.content
         
@@ -107,8 +107,8 @@ async def remove_background_batch(image_urls: list[str]):
     for image_url in image_urls:
         try:
             # Download image
-            async with httpx.AsyncClient() as client:
-                response = await client.get(image_url, timeout=30.0)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(image_url, timeout=60.0)
                 response.raise_for_status()
                 image_data = response.content
             
