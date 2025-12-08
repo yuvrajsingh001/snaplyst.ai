@@ -1,17 +1,62 @@
-import { supabase } from "./supabaseClient";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
+import type { ProductCore, ChannelConfig, ProductStackWithChannels } from "./types/product";
 
 /**
  * Get the current user
  */
 async function getCurrentUser() {
+  // Check if Supabase is configured
+  if (!isSupabaseConfigured()) {
+    throw new Error(
+      "Supabase is not configured. Please set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in your .env.local file."
+    );
+  }
+
+  try {
   const {
     data: { user },
     error,
   } = await supabase.auth.getUser();
-  if (error || !user) {
-    throw new Error("Not authenticated");
+
+    if (error) {
+      // Provide more helpful error messages
+      if (error.message?.includes("fetch") || error.message?.includes("Failed to fetch")) {
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "not set";
+        throw new Error(
+          `Failed to connect to Supabase. Please check:\n` +
+          `1. Your internet connection\n` +
+          `2. That NEXT_PUBLIC_SUPABASE_URL is correct: ${supabaseUrl.substring(0, 40)}...\n` +
+          `3. That your Supabase project is active (not paused)\n` +
+          `4. That CORS is properly configured in your Supabase project settings\n` +
+          `Original error: ${error.message}`
+        );
+      }
+      throw new Error(error.message || "User not authenticated");
+    }
+
+    if (!user) {
+      throw new Error("User not authenticated. Please sign in.");
   }
+
   return user;
+  } catch (err) {
+    // Handle network errors
+    if (err instanceof TypeError && err.message.includes("fetch")) {
+      throw new Error(
+        `Network error connecting to Supabase. Please check:\n` +
+        `1. Your internet connection\n` +
+        `2. That your Supabase project URL is correct\n` +
+        `3. That CORS is properly configured in your Supabase project\n` +
+        `4. That your Supabase project is not paused`
+      );
+    }
+    // Re-throw if it's already our custom error
+    if (err instanceof Error && err.message.includes("Supabase")) {
+      throw err;
+    }
+    // Otherwise wrap in a generic error
+    throw new Error(err instanceof Error ? err.message : "Failed to get current user");
+  }
 }
 
 /**
@@ -225,6 +270,306 @@ export async function getStack(stackId: string | number) {
 }
 
 /**
+ * Get products with images and channels for export
+ * Returns all products for the current user with their images
+ */
+export async function getProductsForExport(): Promise<Array<{
+  product: ProductStackWithChannels;
+  images: Array<{ id: string; storage_path: string; filename?: string }>;
+}>> {
+  const user = await getCurrentUser();
+
+  // Get all stacks for the user
+  const { data: stacks, error: stacksError } = await supabase
+    .from("product_stacks")
+    .select("*")
+    .eq("owner_id", user.id)
+    .order("created_at", { ascending: true });
+
+  if (stacksError) {
+    throw new Error(stacksError.message || "Failed to fetch products");
+  }
+
+  if (!stacks || stacks.length === 0) {
+    return [];
+  }
+
+  // Get images for all stacks
+  const stackIds = stacks.map((s) => s.id);
+  const { data: allImages, error: imagesError } = await supabase
+    .from("product_images")
+    .select("id, stack_id, storage_path, filename")
+    .in("stack_id", stackIds)
+    .order("created_at", { ascending: true });
+
+  if (imagesError) {
+    throw new Error(imagesError.message || "Failed to fetch images");
+  }
+
+  // Group images by stack_id
+  const imagesByStack: Record<string, Array<{ id: string; storage_path: string; filename?: string }>> = {};
+  (allImages || []).forEach((img) => {
+    if (img.stack_id) {
+      if (!imagesByStack[img.stack_id]) {
+        imagesByStack[img.stack_id] = [];
+      }
+      imagesByStack[img.stack_id].push({
+        id: img.id,
+        storage_path: img.storage_path,
+        filename: img.filename,
+      });
+    }
+  });
+
+  // Combine stacks with their images
+  return stacks.map((stack) => {
+    const metadata = stack.metadata || {};
+    const channels: ChannelConfig = metadata.channels || {
+      depopEnabled: false,
+      shopifyEnabled: false,
+    };
+
+    const product: ProductStackWithChannels = {
+      id: stack.id,
+      title: stack.title || "",
+      description: stack.description || "",
+      price: stack.price,
+      compareAtPrice: metadata.compareAtPrice || null,
+      brand: metadata.brand || null,
+      condition: metadata.condition || null,
+      size: metadata.size || null,
+      colour1: metadata.colour1 || null,
+      colour2: metadata.colour2 || null,
+      tags: metadata.tags || [],
+      sku: metadata.sku || null,
+      weight: metadata.weight || null,
+      weightUnit: metadata.weightUnit || null,
+      category: metadata.category || null,
+      currency: stack.currency,
+      metadata: {
+        ...metadata,
+        channels,
+      },
+      created_at: stack.created_at,
+      updated_at: stack.updated_at,
+      owner_id: stack.owner_id,
+    };
+
+    return {
+      product,
+      images: imagesByStack[stack.id] || [],
+    };
+  });
+}
+
+/**
+ * Get a product stack with channel configuration
+ * Returns the stack with normalized channel config from metadata.channels
+ */
+export async function getProductWithChannels(id: string | number): Promise<ProductStackWithChannels> {
+  const user = await getCurrentUser();
+
+  const { data, error } = await supabase
+    .from("product_stacks")
+    .select("*")
+    .eq("id", id)
+    .eq("owner_id", user.id)
+    .single();
+
+  if (error) {
+    throw new Error(error.message || "Product not found or access denied");
+  }
+
+  // Normalize the data structure
+  const metadata = data.metadata || {};
+  const channels: ChannelConfig = metadata.channels || {
+    depopEnabled: false,
+    shopifyEnabled: false,
+  };
+
+  return {
+    id: data.id,
+    title: data.title || "",
+    description: data.description || "",
+    price: data.price,
+    compareAtPrice: metadata.compareAtPrice || null,
+    brand: metadata.brand || null,
+    condition: metadata.condition || null,
+    size: metadata.size || null,
+    colour1: metadata.colour1 || null,
+    colour2: metadata.colour2 || null,
+    tags: metadata.tags || [],
+    sku: metadata.sku || null,
+    weight: metadata.weight || null,
+    weightUnit: metadata.weightUnit || null,
+    category: metadata.category || null,
+    currency: data.currency,
+    metadata: {
+      ...metadata,
+      channels,
+    },
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+    owner_id: data.owner_id,
+  };
+}
+
+/**
+ * Update a product stack with channel configuration
+ * Updates both core fields and channel config in metadata.channels
+ */
+export async function updateProductWithChannels(
+  id: string | number,
+  payload: Partial<ProductCore & { channels: ChannelConfig; currency?: string }>
+) {
+  const user = await getCurrentUser();
+
+  // Verify the stack belongs to the user
+  const { data: stack, error: stackError } = await supabase
+    .from("product_stacks")
+    .select("id, owner_id, metadata")
+    .eq("id", id)
+    .eq("owner_id", user.id)
+    .single();
+
+  if (stackError || !stack) {
+    throw new Error("Product not found or access denied");
+  }
+
+  // Build update data
+  const updateData: any = {
+    updated_at: new Date().toISOString(),
+  };
+
+  // Update core fields
+  if (payload.title !== undefined) {
+    updateData.title = payload.title || null;
+  }
+  if (payload.description !== undefined) {
+    updateData.description = payload.description || null;
+  }
+  if (payload.price !== undefined) {
+    // Ensure price is stored as a number (not string)
+    // Note: Database column should be NUMERIC/DECIMAL, not INTEGER, to support decimal prices
+    if (payload.price !== null && payload.price !== undefined) {
+      const priceValue = typeof payload.price === 'number' 
+        ? payload.price 
+        : parseFloat(String(payload.price));
+      
+      // Validate that it's a valid number
+      if (isNaN(priceValue)) {
+        throw new Error(`Invalid price value: ${payload.price}`);
+      }
+      
+      updateData.price = priceValue;
+    } else {
+      updateData.price = null;
+    }
+  }
+  if (payload.currency !== undefined) {
+    updateData.currency = payload.currency || "AUD";
+  }
+
+  // Update metadata fields (brand, condition, size, colours, tags)
+  const currentMetadata = stack.metadata || {};
+  const newMetadata: any = { ...currentMetadata };
+
+  if (payload.brand !== undefined) {
+    newMetadata.brand = payload.brand || null;
+  }
+  if (payload.condition !== undefined) {
+    newMetadata.condition = payload.condition || null;
+  }
+  if (payload.size !== undefined) {
+    newMetadata.size = payload.size || null;
+  }
+  if (payload.colour1 !== undefined) {
+    newMetadata.colour1 = payload.colour1 || null;
+  }
+  if (payload.colour2 !== undefined) {
+    newMetadata.colour2 = payload.colour2 || null;
+  }
+  if (payload.tags !== undefined) {
+    newMetadata.tags = payload.tags || [];
+  }
+  if (payload.compareAtPrice !== undefined) {
+    newMetadata.compareAtPrice = payload.compareAtPrice || null;
+  }
+  if (payload.sku !== undefined) {
+    newMetadata.sku = payload.sku || null;
+  }
+  if (payload.weight !== undefined) {
+    newMetadata.weight = payload.weight || null;
+  }
+  if (payload.weightUnit !== undefined) {
+    newMetadata.weightUnit = payload.weightUnit || null;
+  }
+  if (payload.category !== undefined) {
+    newMetadata.category = payload.category || null;
+  }
+
+  // Update channel configuration
+  if (payload.channels !== undefined) {
+    newMetadata.channels = payload.channels;
+  }
+
+  updateData.metadata = newMetadata;
+
+  const { data, error } = await supabase
+    .from("product_stacks")
+    .update(updateData)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) {
+    // Provide more helpful error message for type mismatch
+    if (error.message?.includes("invalid input syntax for type integer")) {
+      throw new Error(
+        `Database schema error: The 'price' column in 'product_stacks' table is defined as INTEGER but should be NUMERIC/DECIMAL to support decimal prices.\n` +
+        `Please update your database schema in Supabase:\n` +
+        `ALTER TABLE product_stacks ALTER COLUMN price TYPE NUMERIC(10,2);\n` +
+        `Original error: ${error.message}`
+      );
+    }
+    throw new Error(error.message || "Failed to update product");
+  }
+
+  // Return normalized structure
+  const updatedMetadata = data.metadata || {};
+  const channels: ChannelConfig = updatedMetadata.channels || {
+    depopEnabled: false,
+    shopifyEnabled: false,
+  };
+
+  return {
+    id: data.id,
+    title: data.title || "",
+    description: data.description || "",
+    price: data.price,
+    compareAtPrice: updatedMetadata.compareAtPrice || null,
+    brand: updatedMetadata.brand || null,
+    condition: updatedMetadata.condition || null,
+    size: updatedMetadata.size || null,
+    colour1: updatedMetadata.colour1 || null,
+    colour2: updatedMetadata.colour2 || null,
+    tags: updatedMetadata.tags || [],
+    sku: updatedMetadata.sku || null,
+    weight: updatedMetadata.weight || null,
+    weightUnit: updatedMetadata.weightUnit || null,
+    category: updatedMetadata.category || null,
+    currency: data.currency,
+    metadata: {
+      ...updatedMetadata,
+      channels,
+    },
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+    owner_id: data.owner_id,
+  };
+}
+
+/**
  * Update a stack (description, price, etc.)
  */
 export async function updateStack(
@@ -262,7 +607,22 @@ export async function updateStack(
     updateData.description = updates.description || null;
   }
   if (updates.price !== undefined) {
-    updateData.price = updates.price || null;
+    // Ensure price is stored as a number (not string)
+    // Note: Database column should be NUMERIC/DECIMAL, not INTEGER, to support decimal prices
+    if (updates.price !== null && updates.price !== undefined) {
+      const priceValue = typeof updates.price === 'number' 
+        ? updates.price 
+        : parseFloat(String(updates.price));
+      
+      // Validate that it's a valid number
+      if (isNaN(priceValue)) {
+        throw new Error(`Invalid price value: ${updates.price}`);
+      }
+      
+      updateData.price = priceValue;
+    } else {
+      updateData.price = null;
+    }
   }
   if (updates.currency !== undefined) {
     updateData.currency = updates.currency || null;
@@ -479,6 +839,70 @@ export async function getUnsortedImages() {
 }
 
 /**
+ * Get all images from existing stacks with their features for similarity matching
+ * Returns images grouped by stack_id
+ */
+export async function getExistingStackImages() {
+  const user = await getCurrentUser();
+
+  // Get all stacks for the user
+  const { data: stacks, error: stacksError } = await supabase
+    .from("product_stacks")
+    .select("id")
+    .eq("owner_id", user.id);
+
+  if (stacksError) {
+    throw new Error(stacksError.message || "Failed to fetch stacks");
+  }
+
+  if (!stacks || stacks.length === 0) {
+    return [];
+  }
+
+  // Get all images from existing stacks
+  const stackIds = stacks.map((s) => s.id);
+  const { data: images, error: imagesError } = await supabase
+    .from("product_images")
+    .select("*")
+    .in("stack_id", stackIds)
+    .order("created_at", { ascending: true });
+
+  if (imagesError) {
+    throw new Error(imagesError.message || "Failed to fetch stack images");
+  }
+
+  // Group images by stack_id
+  const imagesByStack: Array<{
+    stackId: string;
+    images: Array<{
+      id: string;
+      features: number[];
+      labels: Array<{ description: string; score: number }>;
+    }>;
+  }> = [];
+
+  (images || []).forEach((img) => {
+    if (img.stack_id && img.metadata?.features && img.metadata?.labels) {
+      const stackId = String(img.stack_id);
+      let stackGroup = imagesByStack.find((g) => g.stackId === stackId);
+      
+      if (!stackGroup) {
+        stackGroup = { stackId, images: [] };
+        imagesByStack.push(stackGroup);
+      }
+      
+      stackGroup.images.push({
+        id: img.id,
+        features: img.metadata.features as number[],
+        labels: img.metadata.labels as Array<{ description: string; score: number }>,
+      });
+    }
+  });
+
+  return imagesByStack;
+}
+
+/**
  * Get the header/representative image for a stack (first image)
  */
 export async function getStackHeaderImage(stackId: string | number) {
@@ -533,22 +957,42 @@ export async function deleteStack(stackId: string | number) {
   // Get all images in the stack to delete from storage
   const { data: images, error: imagesError } = await supabase
     .from("product_images")
-    .select("storage_path")
+    .select("storage_path, metadata")
     .eq("stack_id", stackId);
 
   if (imagesError) {
     console.warn("Failed to fetch images for deletion:", imagesError);
   }
 
-  // Delete images from storage
+  // Delete images from storage (both original and processed versions)
   if (images && images.length > 0) {
-    const pathsToDelete = images.map((img) => img.storage_path);
-    const { error: storageError } = await supabase.storage
-      .from("product-images")
-      .remove(pathsToDelete);
+    const pathsToDelete = new Set<string>();
+    
+    images.forEach((img) => {
+      // Add current storage path
+      pathsToDelete.add(img.storage_path);
+      
+      // Add processed storage path if it exists
+      const metadata = img.metadata || {};
+      if (metadata.processed_storage_path) {
+        pathsToDelete.add(metadata.processed_storage_path);
+      }
+      
+      // Add original storage path if it exists (in case current path is processed)
+      if (metadata.original_storage_path) {
+        pathsToDelete.add(metadata.original_storage_path);
+      }
+    });
+    
+    const pathsArray = Array.from(pathsToDelete);
+    if (pathsArray.length > 0) {
+      const { error: storageError } = await supabase.storage
+        .from("product-images")
+        .remove(pathsArray);
 
-    if (storageError) {
-      console.warn("Failed to delete some images from storage:", storageError);
+      if (storageError) {
+        console.warn("Failed to delete some images from storage:", storageError);
+      }
     }
   }
 
@@ -599,22 +1043,42 @@ export async function deleteAllStacks() {
   const stackIds = stacks.map((s) => s.id);
   const { data: images, error: imagesError } = await supabase
     .from("product_images")
-    .select("storage_path")
+    .select("storage_path, metadata")
     .in("stack_id", stackIds);
 
   if (imagesError) {
     console.warn("Failed to fetch images for deletion:", imagesError);
   }
 
-  // Delete images from storage
+  // Delete images from storage (both original and processed versions)
   if (images && images.length > 0) {
-    const pathsToDelete = images.map((img) => img.storage_path);
-    const { error: storageError } = await supabase.storage
-      .from("product-images")
-      .remove(pathsToDelete);
+    const pathsToDelete = new Set<string>();
+    
+    images.forEach((img) => {
+      // Add current storage path
+      pathsToDelete.add(img.storage_path);
+      
+      // Add processed storage path if it exists
+      const metadata = img.metadata || {};
+      if (metadata.processed_storage_path) {
+        pathsToDelete.add(metadata.processed_storage_path);
+      }
+      
+      // Add original storage path if it exists (in case current path is processed)
+      if (metadata.original_storage_path) {
+        pathsToDelete.add(metadata.original_storage_path);
+      }
+    });
+    
+    const pathsArray = Array.from(pathsToDelete);
+    if (pathsArray.length > 0) {
+      const { error: storageError } = await supabase.storage
+        .from("product-images")
+        .remove(pathsArray);
 
-    if (storageError) {
-      console.warn("Failed to delete some images from storage:", storageError);
+      if (storageError) {
+        console.warn("Failed to delete some images from storage:", storageError);
+      }
     }
   }
 
@@ -650,7 +1114,7 @@ export async function deleteImage(imageId: string | number) {
   // Get the image to verify ownership and get storage path
   const { data: image, error: imageError } = await supabase
     .from("product_images")
-    .select("storage_path, stack_id")
+    .select("storage_path, stack_id, metadata")
     .eq("id", imageId)
     .maybeSingle();
 
@@ -676,10 +1140,22 @@ export async function deleteImage(imageId: string | number) {
     }
   }
 
-  // Delete from storage
+  // Delete from storage (both original and processed versions)
+  const pathsToDelete = new Set<string>();
+  pathsToDelete.add(image.storage_path);
+  
+  const metadata = image.metadata || {};
+  if (metadata.processed_storage_path) {
+    pathsToDelete.add(metadata.processed_storage_path);
+  }
+  if (metadata.original_storage_path) {
+    pathsToDelete.add(metadata.original_storage_path);
+  }
+  
+  const pathsArray = Array.from(pathsToDelete);
   const { error: storageError } = await supabase.storage
     .from("product-images")
-    .remove([image.storage_path]);
+    .remove(pathsArray);
 
   if (storageError) {
     console.warn("Failed to delete image from storage:", storageError);

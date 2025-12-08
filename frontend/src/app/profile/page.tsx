@@ -6,6 +6,8 @@ import { useDropzone } from "react-dropzone";
 import { supabase } from "@/lib/supabaseClient";
 import {
   ensureUserExists,
+  getExistingStackImages,
+  getStacks,
 } from "@/lib/api";
 import {
   processImagesWithVision,
@@ -24,6 +26,8 @@ import {
   useUploadImage,
   useCreateProductImage,
 } from "@/lib/hooks";
+import { getProductsForExport } from "@/lib/api";
+import ProductSelectionModal from "@/components/export/ProductSelectionModal";
 
 type MenuItem = "profile" | "about" | "settings";
 
@@ -37,6 +41,13 @@ export default function ProfilePage() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeMenuItem, setActiveMenuItem] = useState<MenuItem>("profile");
   const [error, setError] = useState<string>("");
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportPlatform, setExportPlatform] = useState<"depop" | "shopify" | null>(null);
+  const [productsForExport, setProductsForExport] = useState<Array<{
+    product: any;
+    images: Array<{ id: string; storage_path: string; filename?: string }>;
+  }>>([]);
+  const [isLoadingExportData, setIsLoadingExportData] = useState(false);
 
   // React Query hooks
   const {
@@ -234,28 +245,89 @@ export default function ProfilePage() {
 
       console.log(`Sorting ${imagesWithFeatures.length} images...`);
 
-      // Group similar images
-      const imageGroups = groupSimilarImagesWithVision(
-        imagesWithFeatures.map((img) => ({
-          id: img.id,
-          features: img.features,
-          labels: img.labels,
-          file: {} as File, // Not needed for grouping
-        })),
-        SIMILARITY_THRESHOLD
+      // Get existing stacks and their images for cross-batch matching
+      const existingStacks = await getStacks();
+      const existingStackImages = await getExistingStackImages();
+      const existingStackCount = existingStacks.length;
+
+      console.log(`Found ${existingStackCount} existing stacks with ${existingStackImages.length} stack groups`);
+
+      // Track which new images have been matched to existing stacks
+      const matchedToExistingStacks = new Map<string, string>(); // imageId -> stackId
+      const processedNewImageIds = new Set<string>();
+
+      // First, try to match new images to existing stacks
+      for (const stackGroup of existingStackImages) {
+        if (stackGroup.images.length === 0) continue;
+
+        // Use the first image in the stack as the representative for matching
+        const representativeImage = stackGroup.images[0];
+
+        for (const newImage of imagesWithFeatures) {
+          if (processedNewImageIds.has(newImage.id)) continue;
+
+          // Check if new image matches any image in this existing stack
+          let matchesStack = false;
+          for (const existingImage of stackGroup.images) {
+            const similarity = calculateSimilarityPercentage(
+              newImage.features,
+              existingImage.features
+            );
+            
+            if (similarity >= SIMILARITY_THRESHOLD) {
+              matchesStack = true;
+              break;
+            }
+          }
+
+          if (matchesStack) {
+            matchedToExistingStacks.set(newImage.id, stackGroup.stackId);
+            processedNewImageIds.add(newImage.id);
+            console.log(`Matched new image ${newImage.id} to existing stack ${stackGroup.stackId}`);
+          }
+        }
+      }
+
+      // Assign matched images to existing stacks
+      for (const [imageId, stackId] of matchedToExistingStacks.entries()) {
+        try {
+          await assignImageMutation.mutateAsync({ imageId, stackId });
+        } catch (err) {
+          console.error(`Failed to assign image ${imageId} to existing stack ${stackId}:`, err);
+        }
+      }
+
+      // Get remaining unmatched images
+      const unmatchedImages = imagesWithFeatures.filter(
+        (img) => !processedNewImageIds.has(img.id)
       );
 
-      console.log(`Found ${imageGroups.length} groups of similar images`);
+      console.log(`${matchedToExistingStacks.size} images matched to existing stacks, ${unmatchedImages.length} images remaining to group`);
 
-      // Create stacks for each group and assign images
+      // Group remaining unmatched images among themselves
+      const imageGroups = unmatchedImages.length > 0
+        ? groupSimilarImagesWithVision(
+            unmatchedImages.map((img) => ({
+              id: img.id,
+              features: img.features,
+              labels: img.labels,
+              file: {} as File, // Not needed for grouping
+            })),
+            SIMILARITY_THRESHOLD
+          )
+        : [];
+
+      console.log(`Found ${imageGroups.length} new groups of similar images`);
+
+      // Create new stacks for each group and assign images
       for (let i = 0; i < imageGroups.length; i++) {
         const group = imageGroups[i];
         
         if (group.length === 0) continue;
 
-        // Create a stack for this group
+        // Create a stack for this group, continuing numbering from existing stacks
         const stack = await createStackMutation.mutateAsync({
-          title: `Product ${i + 1}`,
+          title: `Product ${existingStackCount + i + 1}`,
           description: `Group of ${group.length} similar images - ${new Date().toLocaleDateString()}`,
           metadata: {
             similarity_threshold: SIMILARITY_THRESHOLD,
@@ -302,7 +374,7 @@ export default function ProfilePage() {
       const groupedImageIds = new Set(
         imageGroups.flatMap((group) => group.map((img) => img.id))
       );
-      const ungroupedImages = imagesWithFeatures.filter(
+      const ungroupedImages = unmatchedImages.filter(
         (img) => !groupedImageIds.has(img.id)
       );
 
@@ -310,9 +382,8 @@ export default function ProfilePage() {
         console.log(`Creating individual stacks for ${ungroupedImages.length} unique images...`);
         for (let i = 0; i < ungroupedImages.length; i++) {
           const img = ungroupedImages[i];
-          const imageRecord = images.find((i) => i.id === img.id);
           const stack = await createStackMutation.mutateAsync({
-            title: `Product ${imageGroups.length + i + 1}`,
+            title: `Product ${existingStackCount + imageGroups.length + i + 1}`,
             description: `Individual image - ${new Date().toLocaleDateString()}`,
             metadata: {
               is_unique: true,
@@ -786,10 +857,51 @@ export default function ProfilePage() {
           {/* Stacks Grid - Show only header images */}
           {stacksWithHeaders.length > 0 && (
             <div className="mt-8">
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex items-center justify-between flex-wrap gap-2">
                 <h3 className="text-lg font-semibold text-black dark:text-zinc-50">
                   Sorted Stacks ({stacksWithHeaders.length})
                 </h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={async () => {
+                      setIsLoadingExportData(true);
+                      try {
+                        const products = await getProductsForExport();
+                        setProductsForExport(products);
+                        setExportPlatform("depop");
+                        setExportModalOpen(true);
+                      } catch (err) {
+                        console.error("Failed to load products for export:", err);
+                        setError("Failed to load products for export");
+                      } finally {
+                        setIsLoadingExportData(false);
+                      }
+                    }}
+                    disabled={isLoadingExportData || stacksWithHeaders.length === 0}
+                    className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {isLoadingExportData ? "Loading..." : "Export Depop CSV"}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setIsLoadingExportData(true);
+                      try {
+                        const products = await getProductsForExport();
+                        setProductsForExport(products);
+                        setExportPlatform("shopify");
+                        setExportModalOpen(true);
+                      } catch (err) {
+                        console.error("Failed to load products for export:", err);
+                        setError("Failed to load products for export");
+                      } finally {
+                        setIsLoadingExportData(false);
+                      }
+                    }}
+                    disabled={isLoadingExportData || stacksWithHeaders.length === 0}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {isLoadingExportData ? "Loading..." : "Export Shopify CSV"}
+                  </button>
                 <button
                   onClick={handleClearAllStacks}
                   disabled={isClearing}
@@ -797,6 +909,7 @@ export default function ProfilePage() {
                 >
                   {isClearing ? "Clearing..." : "Clear All"}
                 </button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
                 {stacksWithHeaders.map(({ stack, headerImage }) => {
@@ -810,7 +923,7 @@ export default function ProfilePage() {
                   return (
                     <div
                       key={stack.id}
-                      onClick={() => router.push(`/stack/${stack.id}`)}
+                      onClick={() => router.push(`/products/${stack.id}`)}
                       className="group relative aspect-square overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 cursor-pointer hover:border-blue-500 dark:border-zinc-800 dark:bg-zinc-800 dark:hover:border-blue-500 transition-all"
                     >
                       <img
@@ -830,6 +943,20 @@ export default function ProfilePage() {
           )}
         </div>
       </main>
+
+      {/* Export Modal */}
+      {exportPlatform && (
+        <ProductSelectionModal
+          isOpen={exportModalOpen}
+          onClose={() => {
+            setExportModalOpen(false);
+            setExportPlatform(null);
+            setProductsForExport([]);
+          }}
+          platform={exportPlatform}
+          products={productsForExport}
+        />
+      )}
     </div>
   );
 }
