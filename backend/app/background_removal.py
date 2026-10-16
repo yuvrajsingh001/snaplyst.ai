@@ -1,20 +1,21 @@
 """
 Background removal endpoint for images
 """
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-import httpx
-from PIL import Image
-from io import BytesIO
-import os
 import base64
+import os
+from io import BytesIO
+
+import httpx
+from fastapi import APIRouter, HTTPException
+from PIL import Image
+from pydantic import BaseModel
 
 # Set environment variable to prevent OMP library conflict
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 try:
-    # Try importing onnxruntime first to get better error messages
-    import onnxruntime
+    # Imported first so a missing ONNX runtime fails here with a clear error.
+    import onnxruntime  # noqa: F401
     from rembg import remove
     from rembg.session_factory import new_session
     REMBG_AVAILABLE = True
@@ -53,7 +54,7 @@ async def remove_background(request: RemoveBackgroundRequest):
     Returns the new storage path (no base64 transfer needed).
     """
     if not REMBG_AVAILABLE:
-        error_msg = f"Background removal library not installed. Please install: pip install rembg[cpu]"
+        error_msg = "Background removal library not installed. Please install: pip install rembg[cpu]"
         if 'import_error' in locals():
             error_msg += f" (Import error: {import_error})"
         raise HTTPException(
@@ -72,7 +73,7 @@ async def remove_background(request: RemoveBackgroundRequest):
                 detail="Supabase credentials not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
             )
         
-        from supabase import create_client, Client
+        from supabase import Client, create_client
         supabase: Client = create_client(supabase_url, supabase_service_key)
         
         # Download image from Supabase Storage
@@ -101,7 +102,7 @@ async def remove_background(request: RemoveBackgroundRequest):
         # Use from_() method (with underscore) to avoid Python keyword conflict
         # Supabase raises exceptions on error, so wrap in try-except
         try:
-            upload_result = supabase.storage.from_("product-images").upload(
+            supabase.storage.from_("product-images").upload(
                 new_path,
                 processed_image_bytes,
                 file_options={
@@ -133,7 +134,7 @@ async def remove_background_batch(image_urls: list[str]):
     Returns base64 encoded images
     """
     if not REMBG_AVAILABLE:
-        error_msg = f"Background removal library not installed. Please install: pip install rembg[cpu]"
+        error_msg = "Background removal library not installed. Please install: pip install rembg[cpu]"
         if 'import_error' in locals():
             error_msg += f" (Import error: {import_error})"
         raise HTTPException(
