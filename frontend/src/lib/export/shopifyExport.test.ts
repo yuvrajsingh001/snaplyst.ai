@@ -23,6 +23,45 @@ describe("exportShopifyCsv", () => {
     await expect(exportShopifyCsv([])).rejects.toThrow("No products to export");
   });
 
+  it("does not treat extra image rows as a duplicate handle", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, text: async () => template })),
+    );
+
+    await exportShopifyCsv([
+      exportProduct({
+        images: [
+          { id: "img-1", storage_path: "a.jpg", publicUrl: "https://cdn.example/a.jpg" },
+          { id: "img-2", storage_path: "b.jpg", publicUrl: "https://cdn.example/b.jpg" },
+        ],
+      }),
+    ]);
+
+    expect(warn.mock.calls.some((call) => String(call[0]).includes("Duplicate handle"))).toBe(
+      false,
+    );
+  });
+
+  it("warns once when two products generate the same handle", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, text: async () => template })),
+    );
+
+    await exportShopifyCsv([
+      exportProduct({ id: "a", title: "Vintage Jacket" }),
+      exportProduct({ id: "b", title: "Vintage Jacket" }),
+    ]);
+
+    const duplicates = warn.mock.calls.filter((call) =>
+      String(call[0]).includes('Duplicate handle "vintage-jacket"'),
+    );
+    expect(duplicates).toHaveLength(1);
+  });
+
   it("emits one Shopify row per image using the official columns", async () => {
     vi.stubGlobal(
       "fetch",

@@ -1306,17 +1306,25 @@ export async function removeBackgroundFromImage(imageId: string | number) {
   // Get original path (for undo)
   const originalPath = metadata.original_storage_path || image.storage_path;
 
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) {
+    throw new Error("Not authenticated. Please sign in.");
+  }
+
   let response: Response;
   try {
     // Background removal can take 30-60 seconds, so set a longer timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
     
-    // Backend handles download, processing, and upload - we just pass the info
+    // Backend handles download, processing, and upload - we just pass the info.
+    // The bearer token is checked against user_id before the service role upload.
     response = await fetch(`${backendUrl}/api/background-removal/remove`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
         image_url: urlData.publicUrl,

@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from app import background_removal
+from app.background_removal import build_processed_storage_path
 from tests.images import png_bytes
 
 REMOVE_URL = "/api/background-removal/remove"
@@ -69,19 +70,31 @@ def _install_downloader(monkeypatch, responses):
     return client
 
 
-def _install_supabase(monkeypatch, upload_error=None):
+def _install_supabase(monkeypatch, upload_error=None, caller_id="user-1", auth_error=None):
     bucket = MagicMock()
     if upload_error is not None:
         bucket.upload.side_effect = upload_error
     storage = MagicMock()
     storage.from_.return_value = bucket
+    user = MagicMock()
+    user.id = caller_id
+    auth_result = MagicMock()
+    auth_result.user = user
     supabase_client = MagicMock()
     supabase_client.storage = storage
+    if auth_error is not None:
+        supabase_client.auth.get_user.side_effect = auth_error
+    else:
+        supabase_client.auth.get_user.return_value = auth_result
 
     fake_module = MagicMock()
     fake_module.create_client.return_value = supabase_client
     monkeypatch.setitem(__import__("sys").modules, "supabase", fake_module)
     return fake_module, bucket
+
+
+def _auth(token="test-token"):
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _install_rembg(monkeypatch, output=None, error=None):
@@ -127,11 +140,14 @@ def test_remove_requires_supabase_configuration(client, monkeypatch):
     monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
     _install_rembg(monkeypatch)
 
-    response = client.post(REMOVE_URL, json=_payload())
+    response = client.post(REMOVE_URL, json=_payload(), headers=_auth())
 
     assert response.status_code == 500
-    assert "SUPABASE_URL" in response.json()["detail"]
-    assert "SUPABASE_SERVICE_ROLE_KEY" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail == (
+        "Supabase credentials not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
+    )
+    assert not detail.startswith("Failed to process image")
 
 
 @pytest.mark.parametrize(
@@ -140,8 +156,7 @@ def test_remove_requires_supabase_configuration(client, monkeypatch):
         ("user-1/photo.jpg", "user-1/photo_bg_removed.png"),
         ("user-1/folder/look.1.jpeg", "user-1/folder/look.1_bg_removed.png"),
         ("user-1/noext", "user-1/noext_bg_removed.png"),
-        # Current path join keeps a leading slash when there is no folder.
-        ("photo.jpg", "/photo_bg_removed.png"),
+        ("/user-1/photo.jpg", "user-1/photo_bg_removed.png"),
     ],
 )
 def test_remove_names_processed_object_and_uploads_png(
@@ -152,7 +167,9 @@ def test_remove_names_processed_object_and_uploads_png(
     _install_rembg(monkeypatch, output=png_bytes((0, 255, 0, 128)))
     fake_module, bucket = _install_supabase(monkeypatch)
 
-    response = client.post(REMOVE_URL, json=_payload(storage_path=storage_path))
+    response = client.post(
+        REMOVE_URL, json=_payload(storage_path=storage_path), headers=_auth()
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -192,12 +209,15 @@ def test_remove_uses_u2net_session(client, monkeypatch):
 
     monkeypatch.setattr(background_removal, "new_session", _new_session)
     monkeypatch.setattr(background_removal, "remove", _remove)
-    _install_supabase(monkeypatch)
+    fake_module, _bucket = _install_supabase(monkeypatch)
 
-    response = client.post(REMOVE_URL, json=_payload())
+    response = client.post(REMOVE_URL, json=_payload(), headers=_auth("session-token"))
 
     assert response.status_code == 200
     assert seen == {"model": "u2net", "session": "session", "size": len(png_bytes())}
+    fake_module.create_client.return_value.auth.get_user.assert_called_once_with(
+        "session-token"
+    )
 
 
 def test_remove_returns_400_when_download_fails(client, monkeypatch):
@@ -210,10 +230,10 @@ def test_remove_returns_400_when_download_fails(client, monkeypatch):
         [httpx.HTTPStatusError("nope", request=request, response=httpx.Response(404, request=request))],
     )
 
-    response = client.post(REMOVE_URL, json=_payload())
+    response = client.post(REMOVE_URL, json=_payload(), headers=_auth())
 
     assert response.status_code == 400
-    assert "Failed to download image" in response.json()["detail"]
+    assert response.json()["detail"].startswith("Failed to download image")
 
 
 def test_remove_returns_500_when_model_fails(client, monkeypatch):
@@ -222,10 +242,10 @@ def test_remove_returns_500_when_model_fails(client, monkeypatch):
     _install_rembg(monkeypatch, error=RuntimeError("model exploded"))
     _install_supabase(monkeypatch)
 
-    response = client.post(REMOVE_URL, json=_payload())
+    response = client.post(REMOVE_URL, json=_payload(), headers=_auth())
 
     assert response.status_code == 500
-    assert "model exploded" in response.json()["detail"]
+    assert response.json()["detail"] == "Failed to process image: model exploded"
 
 
 def test_remove_returns_500_when_upload_fails(client, monkeypatch):
@@ -234,10 +254,70 @@ def test_remove_returns_500_when_upload_fails(client, monkeypatch):
     _install_rembg(monkeypatch)
     _install_supabase(monkeypatch, upload_error=RuntimeError("bucket full"))
 
-    response = client.post(REMOVE_URL, json=_payload())
+    response = client.post(REMOVE_URL, json=_payload(), headers=_auth())
 
     assert response.status_code == 500
-    assert "bucket full" in response.json()["detail"]
+    assert response.json()["detail"] == "Failed to upload processed image: bucket full"
+
+
+def test_processed_path_without_a_folder_has_no_leading_slash():
+    assert build_processed_storage_path("photo.jpg") == "photo_bg_removed.png"
+    assert build_processed_storage_path("/photo.jpg") == "photo_bg_removed.png"
+    assert (
+        build_processed_storage_path("user-1/folder/look.1.jpeg")
+        == "user-1/folder/look.1_bg_removed.png"
+    )
+
+
+def test_remove_rejects_a_missing_or_invalid_session(client, monkeypatch):
+    _configure_env(monkeypatch)
+    _install_rembg(monkeypatch)
+    _install_supabase(monkeypatch)
+    missing = client.post(REMOVE_URL, json=_payload())
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "Missing bearer token"
+
+    _install_supabase(monkeypatch, auth_error=RuntimeError("jwt expired"))
+    rejected = client.post(REMOVE_URL, json=_payload(), headers=_auth("expired"))
+    assert rejected.status_code == 401
+    assert rejected.json()["detail"] == "Invalid or expired session"
+
+
+def test_remove_rejects_a_user_id_that_does_not_match_the_token(client, monkeypatch):
+    _configure_env(monkeypatch)
+    _install_rembg(monkeypatch)
+    _install_downloader(monkeypatch, [_Response(png_bytes())])
+    _fake, bucket = _install_supabase(monkeypatch, caller_id="someone-else")
+
+    response = client.post(REMOVE_URL, json=_payload(), headers=_auth())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "user_id does not match the authenticated user"
+    bucket.upload.assert_not_called()
+
+
+def test_remove_rejects_a_storage_path_outside_the_user_folder(client, monkeypatch):
+    _configure_env(monkeypatch)
+    _install_rembg(monkeypatch)
+    _install_downloader(monkeypatch, [_Response(png_bytes())])
+    _fake, bucket = _install_supabase(monkeypatch)
+
+    outside = client.post(
+        REMOVE_URL,
+        json=_payload(storage_path="photo.jpg"),
+        headers=_auth(),
+    )
+    traversal = client.post(
+        REMOVE_URL,
+        json=_payload(storage_path="user-1/../other-user/photo.jpg"),
+        headers=_auth(),
+    )
+
+    assert outside.status_code == 403
+    assert outside.json()["detail"] == "storage_path is outside this user's folder"
+    assert traversal.status_code == 400
+    assert traversal.json()["detail"] == "Invalid storage path"
+    bucket.upload.assert_not_called()
 
 
 def test_batch_rejects_when_rembg_unavailable(client):

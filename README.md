@@ -29,7 +29,7 @@ Snaplyst is a cross-listing workspace for resellers: group product photos into l
 
 ## Architecture
 
-The browser talks to Supabase for auth, data, and file storage, calls Google Vision directly for similarity, and calls the Python service only for background removal. The Python service downloads the original, runs the model, and writes the PNG back to storage with the service role key.
+The browser talks to Supabase for auth, data, and file storage. Image similarity goes through a Next.js route that holds the Google Vision key on the server. Background removal is the only call to the Python service. That service checks the caller's Supabase session before it downloads the original, runs the model, and writes the PNG back with the service role key.
 
 ```mermaid
 flowchart LR
@@ -37,6 +37,7 @@ flowchart LR
   Auth["Supabase Auth"]
   DB["Supabase Postgres<br/>profiles, product_stacks, product_images"]
   Store["Supabase Storage<br/>bucket: product-images"]
+  VisionRoute["Next.js route<br/>POST /api/vision"]
   Vision["Google Cloud Vision"]
   API["FastAPI service<br/>POST /api/background-removal/remove"]
   Model["rembg + ONNX<br/>u2net"]
@@ -44,8 +45,11 @@ flowchart LR
   Browser -->|"sign in, session"| Auth
   Browser -->|"CRUD listings<br/>owner-scoped"| DB
   Browser -->|"upload originals<br/>read public URLs"| Store
-  Browser -->|"labels, objects, features"| Vision
-  Browser -->|"image_url, storage_path, user_id"| API
+  Browser -->|"base64 image<br/>Bearer session"| VisionRoute
+  VisionRoute -->|"verify JWT"| Auth
+  VisionRoute -->|"labels and objects<br/>server API key"| Vision
+  Browser -->|"image_url, storage_path, user_id<br/>Bearer session"| API
+  API -->|"get_user, user_id must match"| Auth
   API -->|"download original"| Store
   API --> Model
   API -->|"upload PNG<br/>service role"| Store
@@ -56,8 +60,8 @@ flowchart LR
 Background removal request path:
 
 1. The frontend checks storage for an existing `*_bg_removed.png` and reuses it when present.
-2. Otherwise it `POST`s the public image URL plus the original storage path to `/api/background-removal/remove`.
-3. FastAPI downloads the bytes, runs `rembg` with the `u2net` session, and uploads a PNG to the same folder.
+2. Otherwise it `POST`s the public image URL, the original storage path, and the signed-in user id to `/api/background-removal/remove`, with the Supabase access token in `Authorization`.
+3. FastAPI resolves that token with `auth.get_user`, rejects a mismatch with `user_id`, and only then downloads the bytes, runs `rembg` with the `u2net` session, and uploads a PNG under that user's folder.
 4. The frontend saves `processed_storage_path` on the `product_images` row. Undo restores the original path and keeps the PNG for the next time.
 
 ## Tech stack
@@ -67,7 +71,7 @@ Background removal request path:
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS, TanStack Query |
 | Auth, database, storage | Supabase (Postgres, Auth, Storage) |
 | Background removal | FastAPI, rembg, ONNX Runtime, Pillow |
-| Image similarity | Google Cloud Vision API, cosine similarity in the browser |
+| Image similarity | Google Cloud Vision via `POST /api/vision`, cosine similarity in the browser |
 | CSV export | Papa Parse, plus SheetJS for `.xlsx` templates |
 | Hosting | Vercel (frontend), Railway-style Python host (API) |
 | Tests | Vitest + Testing Library, pytest |
@@ -88,8 +92,8 @@ Create `frontend/.env.local` with these names (values stay out of git):
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `NEXT_PUBLIC_GOOGLE_VISION_API_KEY`
 - `NEXT_PUBLIC_API_URL` — base URL of the FastAPI service, with no trailing path
+- `GOOGLE_VISION_API_KEY` — server-only. Do not prefix this with `NEXT_PUBLIC_`. The browser calls `POST /api/vision`, which reads this value.
 - `MAINTENANCE_MODE` — optional; set to `true` to serve the maintenance page
 
 ```bash
@@ -144,10 +148,8 @@ pytest
 
 ## Roadmap
 
-- Authenticate `POST /api/background-removal/remove` against the caller's Supabase session. `user_id` is accepted today and not checked.
-- Move Google Vision calls server-side so the API key is not shipped to the browser.
 - Add eBay and Poshmark export templates next to Depop and Shopify.
-- Queue batch background removal with per-image progress instead of sequential browser requests.
+- Queue batch background removal with per-image progress instead of sequential browser requests. `POST /api/background-removal/remove-batch` still returns base64 and does not upload with the service role key.
 - Suggest price, title, and category from the Vision labels already stored on each photo.
 
 ## Project layout
@@ -158,4 +160,4 @@ backend/      FastAPI background-removal service
 .github/      GitHub Actions CI
 ```
 
-`DEVELOPER_WORKFLOW.md` is a longer internal walkthrough. Parts of it predate background removal and still mention a SQLAlchemy auth API that has since been removed; the diagram above matches the code that ships today.
+[DEVELOPER_WORKFLOW.md](DEVELOPER_WORKFLOW.md) walks through the current request paths: auth, upload, the Vision route, background removal, and CSV export.

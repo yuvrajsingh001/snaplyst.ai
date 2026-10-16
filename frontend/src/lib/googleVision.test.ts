@@ -15,20 +15,6 @@ class FakeFileReader {
   }
 }
 
-function visionPayload() {
-  return {
-    responses: [
-      {
-        labelAnnotations: [
-          { description: "Jacket", score: 0.9 },
-          { description: "Wool", score: 0.4 },
-        ],
-        localizedObjectAnnotations: [{ name: "Coat", score: 0.8 }],
-      },
-    ],
-  };
-}
-
 describe("cosine similarity", () => {
   it("returns 1 for identical vectors and 0 for orthogonal or empty ones", () => {
     expect(cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1);
@@ -96,26 +82,39 @@ describe("analyzeImageWithVision", () => {
     vi.restoreAllMocks();
   });
 
-  it("normalizes label and object scores into a feature vector", async () => {
+  it("asks the server route for annotations and never sends a Vision key", async () => {
     vi.stubGlobal("FileReader", FakeFileReader);
     const fetchMock = vi.fn(async () => ({
       ok: true,
-      statusText: "OK",
-      json: async () => visionPayload(),
+      status: 200,
+      json: async () => ({
+        labels: [
+          { description: "Jacket", score: 0.9 },
+          { description: "Wool", score: 0.4 },
+        ],
+        objects: [{ name: "Coat", score: 0.8 }],
+      }),
     }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await analyzeImageWithVision(
       new File(["bytes"], "jacket.jpg", { type: "image/jpeg" }),
-      "test-vision-key",
+      "session-token",
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://vision.googleapis.com/v1/images:annotate?key=test-vision-key",
-      expect.objectContaining({ method: "POST" }),
+      "/api/vision",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer session-token",
+        }),
+      }),
     );
     const request = JSON.parse(String(fetchMock.mock.calls[0][1].body));
-    expect(request.requests[0].image.content).toBe("aGVsbG8=");
+    expect(request).toEqual({ content: "aGVsbG8=" });
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("googleapis");
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("apiKey");
     expect(result.labels.map((label) => label.description)).toEqual(["Jacket", "Wool"]);
     expect(result.objects[0].name).toBe("Coat");
 
@@ -123,43 +122,25 @@ describe("analyzeImageWithVision", () => {
     expect(magnitude).toBeCloseTo(1);
   });
 
-  it.each([
-    ["API method is blocked", "not enabled"],
-    ["API key not valid", "Invalid Google Vision API key"],
-    ["Quota exceeded", "quota exceeded"],
-  ])("rewrites Vision error %s", async (apiMessage, expected) => {
+  it("surfaces the server error and does not call Google directly", async () => {
     vi.stubGlobal("FileReader", FakeFileReader);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => ({
         ok: false,
-        status: 403,
-        statusText: "Forbidden",
-        json: async () => ({ error: { message: apiMessage } }),
+        status: 502,
+        json: async () => ({ error: "Google Vision API quota exceeded." }),
       })),
     );
 
     await expect(
-      analyzeImageWithVision(new File(["x"], "a.jpg"), "k"),
-    ).rejects.toThrow(expected);
+      analyzeImageWithVision(new File(["x"], "a.jpg"), "session-token"),
+    ).rejects.toThrow("quota exceeded");
   });
 
-  it("falls back to the HTTP status when the error body is not JSON", async () => {
-    vi.stubGlobal("FileReader", FakeFileReader);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: false,
-        status: 500,
-        statusText: "Server Error",
-        json: async () => {
-          throw new Error("not json");
-        },
-      })),
+  it("requires an access token", async () => {
+    await expect(analyzeImageWithVision(new File(["x"], "a.jpg"), "")).rejects.toThrow(
+      "Not authenticated",
     );
-
-    await expect(
-      analyzeImageWithVision(new File(["x"], "a.jpg"), "k"),
-    ).rejects.toThrow(/Server Error/);
   });
 });

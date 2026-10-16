@@ -123,9 +123,23 @@ describe("toShopifyRows", () => {
     expect(row["Variant Weight Unit"]).toBe(unit);
   });
 
-  it("leaves grams blank when weight is 0", () => {
+  it("keeps a weight of 0 as zero grams", () => {
     const [row] = toShopifyRows(exportProduct({ weight: 0, sku: null }));
-    expect(row["Variant Grams"]).toBe("");
+    expect(row["Variant Grams"]).toBe("0");
+  });
+
+  it("keeps an explicit variant weight of 0", () => {
+    const [row] = toShopifyRows(
+      exportProduct({
+        weight: 500,
+        channels: {
+          depopEnabled: false,
+          shopifyEnabled: true,
+          shopify: { variantGrams: 0 },
+        },
+      }),
+    );
+    expect(row["Variant Grams"]).toBe("0");
   });
 
   it("honours explicit shipping and tax flags", () => {

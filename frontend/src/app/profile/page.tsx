@@ -144,21 +144,17 @@ export default function ProfilePage() {
       setError("");
 
       try {
-        // Get Google Vision API key from environment
-        const googleVisionApiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_API_KEY;
-        if (!googleVisionApiKey || googleVisionApiKey === 'your_google_vision_api_key') {
-          setError(
-            "Google Vision API key not configured. " +
-            "Please create a .env file in the frontend directory with: NEXT_PUBLIC_GOOGLE_VISION_API_KEY=your_api_key " +
-            "Then restart your dev server. See QUICK_SETUP_GOOGLE_VISION.md for details."
-          );
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (!accessToken) {
+          setError("Please sign in again before uploading photos.");
           setIsUploading(false);
           return;
         }
 
-        // Step 1: Analyze images with Google Vision API
+        // Step 1: Analyze images. The Vision key stays on the server.
         console.log("Analyzing images with Google Vision API...");
-        const imageAnalyses = await processImagesWithVision(acceptedFiles, googleVisionApiKey);
+        const imageAnalyses = await processImagesWithVision(acceptedFiles, accessToken);
 
         // Step 2: Upload all images to storage and create records (without stack_id)
         console.log("Uploading images to storage...");

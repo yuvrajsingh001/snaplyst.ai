@@ -6,7 +6,7 @@ import os
 from io import BytesIO
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
@@ -45,8 +45,87 @@ class RemoveBackgroundResponse(BaseModel):
     original_storage_path: str
 
 
+def bearer_token(authorization: str | None) -> str:
+    """Return the token from an Authorization header, or raise 401."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    return token.strip()
+
+
+def caller_id(user_response) -> str | None:
+    user = getattr(user_response, "user", None)
+    if user is None and isinstance(user_response, dict):
+        user = user_response.get("user")
+    if user is None:
+        return None
+    found = getattr(user, "id", None)
+    if found is None and isinstance(user, dict):
+        found = user.get("id")
+    return found or None
+
+
+def verify_caller(supabase, token: str, user_id: str) -> None:
+    """Confirm the Supabase JWT belongs to user_id before using the service role."""
+    try:
+        result = supabase.auth.get_user(token)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired session") from exc
+    authenticated_as = caller_id(result)
+    if not authenticated_as:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if authenticated_as != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="user_id does not match the authenticated user",
+        )
+
+
+def storage_parts(storage_path: str) -> list[str]:
+    cleaned = storage_path.strip().lstrip("/")
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    parts: list[str] = []
+    for part in cleaned.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            raise HTTPException(status_code=400, detail="Invalid storage path")
+        parts.append(part)
+    if not parts:
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    return parts
+
+
+def build_processed_storage_path(storage_path: str) -> str:
+    """Name the PNG next to the original, without a leading slash when there is no folder."""
+    parts = storage_parts(storage_path)
+    filename = parts[-1]
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    processed_name = f"{stem}_bg_removed.png"
+    parent = parts[:-1]
+    if not parent:
+        return processed_name
+    return "/".join([*parent, processed_name])
+
+
+def processed_path_for_user(storage_path: str, user_id: str) -> str:
+    parts = storage_parts(storage_path)
+    if len(parts) < 2 or parts[0] != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="storage_path is outside this user's folder",
+        )
+    return build_processed_storage_path(storage_path)
+
+
 @router.post("/remove", response_model=RemoveBackgroundResponse)
-async def remove_background(request: RemoveBackgroundRequest):
+async def remove_background(
+    request: RemoveBackgroundRequest,
+    authorization: str | None = Header(default=None),
+):
     """
     Remove background from an image
     
@@ -62,6 +141,8 @@ async def remove_background(request: RemoveBackgroundRequest):
             detail=error_msg
         )
     
+    token = bearer_token(authorization)
+
     try:
         # Initialize Supabase client with service role key
         supabase_url = os.getenv("SUPABASE_URL")
@@ -75,6 +156,8 @@ async def remove_background(request: RemoveBackgroundRequest):
         
         from supabase import Client, create_client
         supabase: Client = create_client(supabase_url, supabase_service_key)
+        verify_caller(supabase, token, request.user_id)
+        new_path = processed_path_for_user(request.storage_path, request.user_id)
         
         # Download image from Supabase Storage
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -92,15 +175,9 @@ async def remove_background(request: RemoveBackgroundRequest):
         output_buffer.seek(0)
         processed_image_bytes = output_buffer.read()
         
-        # Generate new storage path
-        path_parts = request.storage_path.split("/")
-        filename = path_parts[-1]
-        name_without_ext = filename.rsplit(".", 1)[0] if "." in filename else filename
-        new_path = f"{'/'.join(path_parts[:-1])}/{name_without_ext}_bg_removed.png"
-        
-        # Upload processed image directly to Supabase Storage
-        # Use from_() method (with underscore) to avoid Python keyword conflict
-        # Supabase raises exceptions on error, so wrap in try-except
+        # Upload processed image directly to Supabase Storage.
+        # Use from_() (with underscore) to avoid the Python keyword.
+        # Supabase raises exceptions on error, so wrap in try-except.
         try:
             supabase.storage.from_("product-images").upload(
                 new_path,
@@ -114,17 +191,19 @@ async def remove_background(request: RemoveBackgroundRequest):
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to upload processed image: {str(upload_error)}"
-            )
+            ) from upload_error
         
         return {
             "processed_storage_path": new_path,
             "original_storage_path": request.storage_path
         }
         
+    except HTTPException:
+        raise
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process image: {str(e)}") from e
 
 
 @router.post("/remove-batch")
