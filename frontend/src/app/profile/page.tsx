@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
+import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabaseClient";
 import {
   ensureUserExists,
@@ -14,6 +15,12 @@ import {
   groupSimilarImagesWithVision,
   calculateSimilarityPercentage,
 } from "@/lib/googleVision";
+import { GuestCreditsError, isAnonymousUser } from "@/lib/guestCredits";
+import { ensureGuestSession } from "@/lib/guestSession";
+import { analyzeImageWithMeteredVision } from "@/lib/meteredVision";
+import { GuestCreditIndicator } from "@/components/guest/GuestCreditIndicator";
+import { GuestSignupPrompt } from "@/components/guest/GuestSignupPrompt";
+import { guestCreditsQueryKey, useGuestCredits } from "@/lib/hooks/useGuestCredits";
 import type { User } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -48,6 +55,10 @@ export default function ProfilePage() {
     images: Array<{ id: string; storage_path: string; filename?: string }>;
   }>>([]);
   const [isLoadingExportData, setIsLoadingExportData] = useState(false);
+  const [signupPromptOpen, setSignupPromptOpen] = useState(false);
+  const promptedForEmptyCredits = useRef(false);
+  const queryClient = useQueryClient();
+  const { isGuest, credits, setCredits } = useGuestCredits(user);
 
   // React Query hooks
   const {
@@ -129,6 +140,40 @@ export default function ProfilePage() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!user || !isAnonymousUser(user)) return;
+    const userId = user.id;
+    let cancelled = false;
+    ensureGuestSession()
+      .then((result) => {
+        if (cancelled || !result) return;
+        if (result.status === "quota") {
+          queryClient.setQueryData(guestCreditsQueryKey(userId), result.creditsRemaining);
+          setSignupPromptOpen(true);
+          return;
+        }
+        if (result.status === "ready" && result.isGuest && result.creditsRemaining !== null) {
+          queryClient.setQueryData(guestCreditsQueryKey(userId), result.creditsRemaining);
+        }
+        queryClient.invalidateQueries({ queryKey: guestCreditsQueryKey(userId) });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Could not start guest credits");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, queryClient]);
+
+  useEffect(() => {
+    if (isGuest && credits === 0 && !promptedForEmptyCredits.current) {
+      promptedForEmptyCredits.current = true;
+      setSignupPromptOpen(true);
+    }
+  }, [isGuest, credits]);
+
   // Set error from query errors
   useEffect(() => {
     if (stacksError) {
@@ -144,9 +189,20 @@ export default function ProfilePage() {
       setError("");
 
       try {
-        // Get Google Vision API key from environment
+        const {
+          data: { user: currentUser },
+        } = await supabase.auth.getUser();
+        const guestUpload = isAnonymousUser(currentUser);
+
+        if (guestUpload && credits === 0) {
+          setSignupPromptOpen(true);
+          setIsUploading(false);
+          return;
+        }
+
+        // Get Google Vision API key from environment. Guests are metered on the backend.
         const googleVisionApiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_API_KEY;
-        if (!googleVisionApiKey || googleVisionApiKey === 'your_google_vision_api_key') {
+        if (!guestUpload && (!googleVisionApiKey || googleVisionApiKey === 'your_google_vision_api_key')) {
           setError(
             "Google Vision API key not configured. " +
             "Please create a .env file in the frontend directory with: NEXT_PUBLIC_GOOGLE_VISION_API_KEY=your_api_key " +
@@ -156,9 +212,46 @@ export default function ProfilePage() {
           return;
         }
 
-        // Step 1: Analyze images with Google Vision API
+        // Step 1: Analyze images with Google Vision API.
+        // Each guest photo spends one credit on the server before Google is called.
         console.log("Analyzing images with Google Vision API...");
-        const imageAnalyses = await processImagesWithVision(acceptedFiles, googleVisionApiKey);
+        const imageAnalyses: Array<{
+          file: File;
+          features: number[];
+          labels: Array<{ description: string; score: number }>;
+          objects: Array<{ name: string; score: number }>;
+        }> = [];
+
+        if (guestUpload) {
+          for (const file of acceptedFiles) {
+            try {
+              const analysis = await analyzeImageWithMeteredVision(file);
+              if (typeof analysis.creditsRemaining === "number") {
+                setCredits(analysis.creditsRemaining);
+              }
+              imageAnalyses.push({
+                file,
+                features: analysis.features,
+                labels: analysis.labels,
+                objects: analysis.objects,
+              });
+            } catch (analysisError) {
+              if (analysisError instanceof GuestCreditsError) {
+                setCredits(analysisError.creditsRemaining);
+                setSignupPromptOpen(true);
+                break;
+              }
+              throw analysisError;
+            }
+          }
+        } else {
+          imageAnalyses.push(...await processImagesWithVision(acceptedFiles, googleVisionApiKey ?? ""));
+        }
+
+        if (imageAnalyses.length === 0) {
+          setIsUploading(false);
+          return;
+        }
 
         // Step 2: Upload all images to storage and create records (without stack_id)
         console.log("Uploading images to storage...");
@@ -203,12 +296,17 @@ export default function ProfilePage() {
         console.log("Upload complete! Click 'Sort' to group similar images.");
       } catch (err) {
         console.error("Upload error:", err);
-        setError(err instanceof Error ? err.message : "Upload failed");
+        if (err instanceof GuestCreditsError) {
+          setCredits(err.creditsRemaining);
+          setSignupPromptOpen(true);
+        } else {
+          setError(err instanceof Error ? err.message : "Upload failed");
+        }
       } finally {
         setIsUploading(false);
       }
     },
-    []
+    [credits, setCredits]
   );
 
   // Handle Sort button click
@@ -562,7 +660,7 @@ export default function ProfilePage() {
                       Email
                     </label>
                     <p className="mt-1 text-sm text-zinc-900 dark:text-zinc-50">
-                      {user?.email || "Loading..."}
+                      {isGuest ? "Guest" : user?.email || "Loading..."}
                     </p>
                   </div>
                   <div>
@@ -584,7 +682,11 @@ export default function ProfilePage() {
                           : "text-yellow-600 dark:text-yellow-400"
                       }`}
                     >
-                      {user?.email_confirmed_at ? "✓ Verified" : "⚠ Not Verified"}
+                      {isGuest
+                        ? "Guest session"
+                        : user?.email_confirmed_at
+                          ? "✓ Verified"
+                          : "⚠ Not Verified"}
                     </p>
                   </div>
                   <div>
@@ -673,7 +775,7 @@ export default function ProfilePage() {
               onClick={handleLogout}
               className="w-full rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:bg-red-700 dark:hover:bg-red-800"
             >
-              {isSidebarCollapsed ? "🚪" : "Logout"}
+              {isSidebarCollapsed ? "🚪" : isGuest ? "End guest session" : "Logout"}
             </button>
           </div>
         </div>
@@ -682,14 +784,35 @@ export default function ProfilePage() {
       {/* Main Content Area - Image Upload */}
       <main className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-4xl">
-          <div className="mb-6">
-            <h2 className="text-2xl font-bold text-black dark:text-zinc-50">
-              Upload Images
-            </h2>
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Drag and drop images here, or click to select files
-            </p>
+          <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-2xl font-bold text-black dark:text-zinc-50">
+                Upload Images
+              </h2>
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                {isGuest
+                  ? "Each photo you analyze uses 1 guest credit. Background removal uses 1 credit too."
+                  : "Drag and drop images here, or click to select files"}
+              </p>
+            </div>
+            {isGuest && (
+              <GuestCreditIndicator
+                credits={credits}
+                onEmptyClick={() => setSignupPromptOpen(true)}
+              />
+            )}
           </div>
+
+          {isGuest && credits === 0 && (
+            <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/20">
+              <p className="text-sm text-amber-900 dark:text-amber-100">
+                You&apos;re out of guest credits. Create a free account to keep analyzing photos and removing backgrounds.
+              </p>
+              <a href="/signup" className="mt-2 inline-block text-sm font-medium text-amber-950 underline dark:text-amber-50">
+                Create a free account
+              </a>
+            </div>
+          )}
 
           {/* Error Message */}
           {error && (
@@ -943,6 +1066,8 @@ export default function ProfilePage() {
           )}
         </div>
       </main>
+
+      <GuestSignupPrompt open={signupPromptOpen} onClose={() => setSignupPromptOpen(false)} />
 
       {/* Export Modal */}
       {exportPlatform && (

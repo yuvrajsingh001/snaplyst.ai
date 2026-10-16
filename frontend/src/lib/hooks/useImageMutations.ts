@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { deleteImage, createProductImage, uploadToSupabaseStorage, removeBackgroundFromImage, undoBackgroundRemoval, removeBackgroundFromStack } from "../api";
-import type { User } from "@supabase/supabase-js";
+import { guestCreditsQueryKey } from "./useGuestCredits";
 
 /**
  * Hook for deleting an image
@@ -79,6 +79,15 @@ export function useRemoveBackground() {
       if (user) {
         queryClient.invalidateQueries({ queryKey: ["stacks", user.id] });
         queryClient.invalidateQueries({ queryKey: ["stacksWithHeaders", user.id] });
+        queryClient.invalidateQueries({ queryKey: guestCreditsQueryKey(user.id) });
+      }
+    },
+    onError: async () => {
+      const {
+        data: { user },
+      } = await import("../supabaseClient").then((m) => m.supabase.auth.getUser());
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: guestCreditsQueryKey(user.id) });
       }
     },
   });
@@ -129,6 +138,15 @@ export function useRemoveBackgroundFromStack() {
       if (user) {
         queryClient.invalidateQueries({ queryKey: ["stacks", user.id] });
         queryClient.invalidateQueries({ queryKey: ["stacksWithHeaders", user.id] });
+        queryClient.invalidateQueries({ queryKey: guestCreditsQueryKey(user.id) });
+      }
+    },
+    onError: async () => {
+      const {
+        data: { user },
+      } = await import("../supabaseClient").then((m) => m.supabase.auth.getUser());
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: guestCreditsQueryKey(user.id) });
       }
     },
   });

@@ -311,7 +311,7 @@ export default function ShopifySettingsDrawer({
                   placeholder="0"
                 />
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  Inventory quantity (Inventory Tracker will be set to "shopify")
+                  {"Inventory quantity (Inventory Tracker will be set to \"shopify\")"}
                 </p>
               </div>
 

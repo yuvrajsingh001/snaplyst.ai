@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase, isSupabaseConfigured } from "@/lib/supabaseClient";
+import { ContinueAsGuestButton } from "@/components/guest/ContinueAsGuestButton";
 
 export default function Home() {
   const router = useRouter();
@@ -216,6 +217,7 @@ export default function Home() {
               : "Already have an account? Login"}
           </button>
         </div>
+        <ContinueAsGuestButton />
       </div>
     </div>
   );

@@ -1,0 +1,11 @@
+# Lightweight deps for lint and tests.
+# rembg, onnxruntime, and supabase are intentionally omitted: tests mock them
+# so CI does not download ONNX models or a service-role client.
+fastapi
+uvicorn
+pydantic
+httpx
+pillow
+python-multipart
+pytest
+ruff

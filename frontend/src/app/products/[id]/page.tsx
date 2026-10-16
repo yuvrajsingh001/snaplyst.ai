@@ -9,7 +9,12 @@ import {
   useProduct,
   useStackImagesWithUrls,
   useUpdateProductWithChannels,
+  useRemoveBackground,
+  useGuestCredits,
 } from "@/lib/hooks";
+import { GuestCreditsError } from "@/lib/guestCredits";
+import { GuestCreditIndicator } from "@/components/guest/GuestCreditIndicator";
+import { GuestSignupPrompt } from "@/components/guest/GuestSignupPrompt";
 import type { ProductCore, ChannelConfig } from "@/lib/types/product";
 import DepopSettingsDrawer from "@/components/channels/DepopSettingsDrawer";
 import ShopifySettingsDrawer from "@/components/channels/ShopifySettingsDrawer";
@@ -28,6 +33,8 @@ export default function ProductEditorPage() {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string>("");
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [signupPromptOpen, setSignupPromptOpen] = useState(false);
+  const [isRemovingBackground, setIsRemovingBackground] = useState(false);
 
   // Form state for general fields
   const [generalFields, setGeneralFields] = useState<Partial<ProductCore>>({
@@ -76,6 +83,8 @@ export default function ProductEditorPage() {
   } = useStackImagesWithUrls(productId);
 
   const updateProductMutation = useUpdateProductWithChannels();
+  const removeBackgroundMutation = useRemoveBackground();
+  const { isGuest, credits, setCredits } = useGuestCredits(user);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -289,6 +298,12 @@ export default function ProductEditorPage() {
                 Edit Product
               </h1>
             </div>
+            {isGuest && (
+              <GuestCreditIndicator
+                credits={credits}
+                onEmptyClick={() => setSignupPromptOpen(true)}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -350,6 +365,41 @@ export default function ProductEditorPage() {
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">
                   No images in this product
                 </p>
+              )}
+              {imagesWithUrls.length > 0 && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const target = imagesWithUrls.find((img) => img.id === heroImageId) ?? imagesWithUrls[0];
+                    if (!target?.id) return;
+                    if (isGuest && credits === 0) {
+                      setSignupPromptOpen(true);
+                      return;
+                    }
+                    setIsRemovingBackground(true);
+                    setError("");
+                    try {
+                      await removeBackgroundMutation.mutateAsync(target.id);
+                    } catch (err) {
+                      if (err instanceof GuestCreditsError) {
+                        setCredits(err.creditsRemaining);
+                        setSignupPromptOpen(true);
+                      } else {
+                        setError(err instanceof Error ? err.message : "Could not remove the background");
+                      }
+                    } finally {
+                      setIsRemovingBackground(false);
+                    }
+                  }}
+                  disabled={isRemovingBackground}
+                  className="mt-4 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-800"
+                >
+                  {isRemovingBackground
+                    ? "Removing background..."
+                    : isGuest
+                      ? "Remove background (1 credit)"
+                      : "Remove background"}
+                </button>
               )}
             </div>
           </div>
@@ -752,6 +802,7 @@ export default function ProductEditorPage() {
         }}
         onChange={handleShopifyFieldsChange}
       />
+      <GuestSignupPrompt open={signupPromptOpen} onClose={() => setSignupPromptOpen(false)} />
     </div>
   );
 }

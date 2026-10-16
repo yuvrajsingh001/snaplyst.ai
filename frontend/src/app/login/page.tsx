@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { ContinueAsGuestButton } from "@/components/guest/ContinueAsGuestButton";
+import { isAnonymousUser } from "@/lib/guestCredits";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,7 +19,7 @@ export default function LoginPage() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (session) {
+      if (session && !isAnonymousUser(session.user)) {
         router.push("/profile");
       }
     };
@@ -30,6 +32,13 @@ export default function LoginPage() {
     setError("");
 
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (isAnonymousUser(session?.user)) {
+        await supabase.auth.signOut();
+      }
+
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -100,7 +109,7 @@ export default function LoginPage() {
           </button>
         </form>
         <p className="mt-4 text-center text-sm text-zinc-600 dark:text-zinc-400">
-          Don't have an account?{" "}
+          {"Don't have an account?"}{" "}
           <a
             href="/signup"
             className="font-medium text-black hover:underline dark:text-zinc-50"
@@ -108,6 +117,7 @@ export default function LoginPage() {
             Sign up
           </a>
         </p>
+        <ContinueAsGuestButton />
       </div>
     </div>
   );

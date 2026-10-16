@@ -7,4 +7,5 @@ export * from "./useStackMutations";
 export * from "./useImageMutations";
 export * from "./useProduct";
 export * from "./useProductMutations";
+export * from "./useGuestCredits";
 

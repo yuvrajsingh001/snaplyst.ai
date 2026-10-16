@@ -79,18 +79,34 @@ export async function analyzeImageWithVision(
   }
 
   const data = await response.json();
-  const annotations = data.responses[0];
+  return analysisFromVisionAnnotations(data.responses[0]);
+}
 
+type VisionLabel = { description: string; score: number };
+type VisionObject = { name: string; score: number };
+
+/**
+ * Turn a Cloud Vision annotate response into the feature vector the sorter uses.
+ * Shared by the browser call and the metered guest call.
+ */
+export function analysisFromVisionAnnotations(annotations: {
+  labelAnnotations?: VisionLabel[];
+  localizedObjectAnnotations?: VisionObject[];
+}): {
+  labels: VisionLabel[];
+  objects: VisionObject[];
+  features: number[];
+} {
   // Extract labels
   const labels =
-    annotations.labelAnnotations?.map((label: any) => ({
+    annotations.labelAnnotations?.map((label) => ({
       description: label.description,
       score: label.score,
     })) || [];
 
   // Extract objects
   const objects =
-    annotations.localizedObjectAnnotations?.map((obj: any) => ({
+    annotations.localizedObjectAnnotations?.map((obj) => ({
       name: obj.name,
       score: obj.score,
     })) || [];
@@ -100,20 +116,20 @@ export async function analyzeImageWithVision(
   const allFeatures: { [key: string]: number } = {};
 
   // Add label features
-  labels.forEach((label: { description: string; score: number }) => {
+  labels.forEach((label) => {
     allFeatures[`label_${label.description.toLowerCase()}`] = label.score;
   });
 
   // Add object features
-  objects.forEach((obj: { name: string; score: number }) => {
+  objects.forEach((obj) => {
     allFeatures[`object_${obj.name.toLowerCase()}`] = obj.score;
   });
 
   // Convert to array (normalized feature vector)
   const featureVector = Object.values(allFeatures);
   const magnitude = Math.sqrt(featureVector.reduce((sum, val) => sum + val * val, 0));
-  const normalizedFeatures = magnitude > 0 
-    ? featureVector.map(val => val / magnitude)
+  const normalizedFeatures = magnitude > 0
+    ? featureVector.map((val) => val / magnitude)
     : featureVector;
 
   return {

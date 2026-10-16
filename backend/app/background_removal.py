@@ -1,20 +1,30 @@
 """
 Background removal endpoint for images
 """
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-import httpx
-from PIL import Image
-from io import BytesIO
-import os
 import base64
+import os
+from io import BytesIO
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from PIL import Image
+from pydantic import BaseModel
+
+from .removal_guard import (
+    assert_image_url_on_project,
+    authorize_background_removal,
+    consume_for_action,
+    refund_charge,
+    resolve_caller,
+    supabase_settings,
+)
 
 # Set environment variable to prevent OMP library conflict
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 try:
-    # Try importing onnxruntime first to get better error messages
-    import onnxruntime
+    # Imported first so a missing ONNX runtime fails here with a clear error.
+    import onnxruntime  # noqa: F401
     from rembg import remove
     from rembg.session_factory import new_session
     REMBG_AVAILABLE = True
@@ -42,10 +52,12 @@ class RemoveBackgroundRequest(BaseModel):
 class RemoveBackgroundResponse(BaseModel):
     processed_storage_path: str  # New storage path in Supabase
     original_storage_path: str
+    # Null for signed-in accounts. Guests get the balance left after this call.
+    credits_remaining: int | None = None
 
 
 @router.post("/remove", response_model=RemoveBackgroundResponse)
-async def remove_background(request: RemoveBackgroundRequest):
+async def remove_background(request: RemoveBackgroundRequest, raw_request: Request):
     """
     Remove background from an image
     
@@ -53,7 +65,7 @@ async def remove_background(request: RemoveBackgroundRequest):
     Returns the new storage path (no base64 transfer needed).
     """
     if not REMBG_AVAILABLE:
-        error_msg = f"Background removal library not installed. Please install: pip install rembg[cpu]"
+        error_msg = "Background removal library not installed. Please install: pip install rembg[cpu]"
         if 'import_error' in locals():
             error_msg += f" (Import error: {import_error})"
         raise HTTPException(
@@ -61,18 +73,20 @@ async def remove_background(request: RemoveBackgroundRequest):
             detail=error_msg
         )
     
+    supabase_url, supabase_service_key = supabase_settings()
+    # Auth, folder ownership, and the guest credit decrement happen before any
+    # model work. A 402 here means the credit was not spent.
+    charge = await authorize_background_removal(
+        authorization=raw_request.headers.get("authorization"),
+        user_id=request.user_id,
+        storage_path=request.storage_path,
+        image_url=request.image_url,
+        supabase_url=supabase_url,
+        service_key=supabase_service_key,
+    )
+
     try:
-        # Initialize Supabase client with service role key
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        
-        if not supabase_url or not supabase_service_key:
-            raise HTTPException(
-                status_code=500,
-                detail="Supabase credentials not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
-            )
-        
-        from supabase import create_client, Client
+        from supabase import Client, create_client
         supabase: Client = create_client(supabase_url, supabase_service_key)
         
         # Download image from Supabase Storage
@@ -101,7 +115,7 @@ async def remove_background(request: RemoveBackgroundRequest):
         # Use from_() method (with underscore) to avoid Python keyword conflict
         # Supabase raises exceptions on error, so wrap in try-except
         try:
-            upload_result = supabase.storage.from_("product-images").upload(
+            supabase.storage.from_("product-images").upload(
                 new_path,
                 processed_image_bytes,
                 file_options={
@@ -117,32 +131,67 @@ async def remove_background(request: RemoveBackgroundRequest):
         
         return {
             "processed_storage_path": new_path,
-            "original_storage_path": request.storage_path
+            "original_storage_path": request.storage_path,
+            "credits_remaining": charge.credits_remaining,
         }
         
     except httpx.HTTPError as e:
+        await refund_charge(charge, supabase_url=supabase_url, service_key=supabase_service_key)
         raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}")
+    except HTTPException:
+        await refund_charge(charge, supabase_url=supabase_url, service_key=supabase_service_key)
+        raise
     except Exception as e:
+        await refund_charge(charge, supabase_url=supabase_url, service_key=supabase_service_key)
         raise HTTPException(status_code=500, detail=f"Failed to process image: {str(e)}")
 
 
 @router.post("/remove-batch")
-async def remove_background_batch(image_urls: list[str]):
+async def remove_background_batch(image_urls: list[str], raw_request: Request):
     """
     Remove background from multiple images
     Returns base64 encoded images
     """
     if not REMBG_AVAILABLE:
-        error_msg = f"Background removal library not installed. Please install: pip install rembg[cpu]"
+        error_msg = "Background removal library not installed. Please install: pip install rembg[cpu]"
         if 'import_error' in locals():
             error_msg += f" (Import error: {import_error})"
         raise HTTPException(
             status_code=500,
             detail=error_msg
         )
-    
+
+    supabase_url, supabase_service_key = supabase_settings()
+    caller = await resolve_caller(
+        raw_request.headers.get("authorization"),
+        supabase_url=supabase_url,
+        service_key=supabase_service_key,
+    )
+
     results = []
     for image_url in image_urls:
+        charge = None
+        try:
+            assert_image_url_on_project(image_url, supabase_url)
+            charge = await consume_for_action(
+                caller,
+                "background_removal",
+                supabase_url=supabase_url,
+                service_key=supabase_service_key,
+            )
+        except HTTPException as credit_error:
+            detail = credit_error.detail
+            message = detail if isinstance(detail, str) else str(detail)
+            results.append({
+                "original_url": image_url,
+                "error": message,
+                "success": False,
+                "status_code": credit_error.status_code,
+            })
+            # A guest who is out of credits should not keep the model busy.
+            if credit_error.status_code == 402:
+                break
+            continue
         try:
             # Download image
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -164,9 +213,11 @@ async def remove_background_batch(image_urls: list[str]):
             results.append({
                 "original_url": image_url,
                 "processed_image_base64": f"data:image/png;base64,{base64_data}",
-                "success": True
+                "success": True,
+                "credits_remaining": charge.credits_remaining if charge else None,
             })
         except Exception as e:
+            await refund_charge(charge, supabase_url=supabase_url, service_key=supabase_service_key)
             results.append({
                 "original_url": image_url,
                 "error": str(e),

@@ -1,7 +1,8 @@
+import logging
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +37,8 @@ app.add_middleware(
 
 # Try to import background removal router, but don't fail if it's not available
 try:
-    from .background_removal import router as background_removal_router, REMBG_AVAILABLE, import_error
+    from .background_removal import REMBG_AVAILABLE, import_error
+    from .background_removal import router as background_removal_router
     app.include_router(background_removal_router)
     if REMBG_AVAILABLE:
         logger.info("Background removal router loaded successfully")
@@ -44,15 +46,26 @@ try:
         logger.warning(f"Background removal router loaded but rembg unavailable: {import_error}")
 except Exception as import_exception:
     logger.error(f"Failed to load background removal router: {import_exception}", exc_info=True)
+    # `except ... as` deletes the name when the block ends, so capture the
+    # message before the fallback route closes over it.
+    failure_detail = str(import_exception)
     # Create a dummy router to prevent 404s
     from fastapi import APIRouter
     dummy_router = APIRouter(prefix="/api/background-removal")
-    
+
     @dummy_router.post("/remove")
     def dummy_remove():
-        return {"error": "Background removal not available", "detail": str(import_exception)}
-    
+        return {"error": "Background removal not available", "detail": failure_detail}
+
     app.include_router(dummy_router)
+
+
+try:
+    from .guest_routes import router as guest_router
+    app.include_router(guest_router)
+    logger.info("Guest credit routes loaded")
+except Exception as guest_import_error:
+    logger.error("Failed to load guest credit routes: %s", guest_import_error, exc_info=True)
 
 
 @app.get("/health")

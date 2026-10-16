@@ -64,3 +64,16 @@ ALLOWED_ORIGINS=https://your-app.vercel.app,https://your-custom-domain.com
 ### CORS Configuration:
 
 The backend automatically reads `ALLOWED_ORIGINS` environment variable. Defaults to localhost for development.
+
+## Guest credits
+
+`POST /api/guest/session` grants a 5-credit balance to an anonymous Supabase user. `POST /api/background-removal/remove` and `POST /api/vision/analyze` spend one credit for guests before doing any paid work. Signed-in accounts are not metered.
+
+Set these on the background service (Railway), in addition to the existing `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`:
+
+```env
+GOOGLE_VISION_API_KEY=your-server-side-vision-key
+GUEST_IP_SALT=a-long-random-string
+```
+
+`GUEST_IP_SALT` is optional. When it is unset, the service role key is used as the salt. Do not put the service role key in the frontend. Apply `supabase/migrations/20261016120000_guest_credits.sql` and enable Anonymous sign-ins before deploying. Details are in `SUPABASE_SETUP.md`.

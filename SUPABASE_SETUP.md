@@ -102,3 +102,57 @@ After creating or updating your `.env.local` file:
 - [Supabase Documentation](https://supabase.com/docs)
 - [Next.js Environment Variables](https://nextjs.org/docs/basic-features/environment-variables)
 
+## Guest access ("Continue as guest")
+
+Recruiters can try the app without an account. A guest is an anonymous Supabase user with **5 credits**. Photo analysis (Google Vision) and background removal each spend one credit. The balance is stored in Postgres and decremented by the backend, not by the browser. When the balance hits zero, the app asks them to sign up. Signing up from the guest session keeps the same user id, so the photos stay with the account.
+
+### 1. Enable anonymous sign-ins
+
+In the Supabase dashboard:
+
+1. Open **Authentication → Sign In / Providers** (or **Authentication → Providers**).
+2. Enable **Anonymous sign-ins**.
+3. Save.
+
+Without this, "Continue as guest" cannot create a session.
+
+### 2. Run the migration
+
+In **SQL Editor**, run the file:
+
+`supabase/migrations/20261016120000_guest_credits.sql`
+
+That creates `guest_credits`, the per-network quota (3 new guest balances per hashed IP per 24 hours), and the service-role-only functions `grant_guest_credits`, `consume_guest_credit`, and `refund_guest_credit`. It also adds a nullable `product_images.owner_id`. Run it **before** deploying the frontend.
+
+The functions are revoked from `anon` and `authenticated`. Guests can read only their own balance. They cannot insert or edit credits.
+
+### 3. Keep guest files in the guest's folder
+
+Storage policies are OR'd together, so this migration does not delete an existing wide policy. In **Storage → product-images**, remove any policy that lets every signed-in user read or write the whole bucket. Keep one equivalent to:
+
+```sql
+bucket_id = 'product-images'
+and (storage.foldername(name))[1] = auth.uid()::text
+```
+
+Background removal also refuses a `storage_path` whose first folder is not the caller's user id, because that upload uses the service role and bypasses storage RLS.
+
+### 4. Environment variables Yuvraj needs to set
+
+Frontend (Vercel), already used by the app:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_API_URL` — the Railway background-service URL
+- `NEXT_PUBLIC_GOOGLE_VISION_API_KEY` — still used when a signed-in account analyzes photos in the browser
+
+Backend (Railway):
+
+- `SUPABASE_URL` — same project URL
+- `SUPABASE_SERVICE_ROLE_KEY` — server only. Never `NEXT_PUBLIC_`.
+- `GOOGLE_VISION_API_KEY` — server-side Vision key for **guest** photo analysis. The credit is spent before this call.
+- `GUEST_IP_SALT` — optional random string used to hash IP addresses for the 3-accounts-per-24h cap. If unset, the service role key is the salt.
+- `ALLOWED_ORIGINS` — include `https://snaplyst-ai.vercel.app`
+
+No new public frontend variable is required. Do not add the service role key to Vercel.
+
