@@ -24,6 +24,18 @@
    pip install -r requirements.txt
    ```
 
+## Tests
+
+CI runs Ruff and pytest. Test dependencies skip rembg and ONNX; the suite mocks model inference and the Supabase client.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+ruff check .
+pytest
+```
+
 ## Running the Server (Optional)
 
 Start the development server:

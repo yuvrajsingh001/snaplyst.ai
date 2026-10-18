@@ -3,7 +3,7 @@
  * These functions will be used to build CSV rows for Depop and Shopify exports
  */
 
-import type { ProductStackWithChannels, DepopFields, ShopifyFields } from "./types/product";
+import type { ProductStackWithChannels } from "./types/product";
 
 /**
  * Build a Depop CSV row from a product with channels

@@ -3,79 +3,43 @@
  * Uses Google Cloud Vision API to extract image features and compare them
  */
 
+type VisionLabel = { description: string; score: number };
+type VisionObject = { name: string; score: number };
+
 /**
- * Get image features using Google Vision API
- * Returns image labels, objects, and other features for similarity comparison
+ * Normalized feature vector from Vision labels and objects.
+ * Label and object names are namespaced so they do not collide.
+ */
+export function featuresFromAnnotations(
+  labels: VisionLabel[],
+  objects: VisionObject[],
+): number[] {
+  const allFeatures: { [key: string]: number } = {};
+  labels.forEach((label) => {
+    allFeatures[`label_${label.description.toLowerCase()}`] = label.score;
+  });
+  objects.forEach((object) => {
+    allFeatures[`object_${object.name.toLowerCase()}`] = object.score;
+  });
+  const featureVector = Object.values(allFeatures);
+  const magnitude = Math.sqrt(featureVector.reduce((sum, value) => sum + value * value, 0));
+  return magnitude > 0 ? featureVector.map((value) => value / magnitude) : featureVector;
+}
+
+/**
+ * Ask the Next.js server route to call Google Vision.
+ * The API key never reaches the browser.
  */
 export async function analyzeImageWithVision(
   imageFile: File,
-  apiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_API_KEY
+  accessToken: string,
 ): Promise<{
-  labels: Array<{ description: string; score: number }>;
-  objects: Array<{ name: string; score: number }>;
-  features: number[]; // Normalized feature vector for similarity
+  labels: VisionLabel[];
+  objects: VisionObject[];
+  features: number[];
 }> {
-  // Convert file to base64
-  const base64Image = await fileToBase64(imageFile);
-
-  // Call Google Vision API
-  const response = await fetch(
-    `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        requests: [
-          {
-            image: {
-              content: base64Image.split(',')[1], // Remove data:image/... prefix
-            },
-            features: [
-              {
-                type: 'LABEL_DETECTION',
-                maxResults: 20,
-              },
-              {
-                type: 'OBJECT_LOCALIZATION',
-                maxResults: 20,
-              },
-              {
-                type: 'IMAGE_PROPERTIES',
-                maxResults: 1,
-              },
-            ],
-          },
-        ],
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    let errorMessage = '';
-    try {
-      const error = await response.json();
-      errorMessage = error.error?.message || response.statusText;
-      
-      // Provide helpful error messages for common issues
-      if (errorMessage.includes('blocked') || errorMessage.includes('API method') || errorMessage.includes('not enabled')) {
-        errorMessage = `Google Vision API is blocked or not enabled. Please:\n` +
-          `1. Enable Cloud Vision API in Google Cloud Console\n` +
-          `2. Check API key restrictions\n` +
-          `3. Ensure billing is enabled (free tier available)\n` +
-          `See GOOGLE_VISION_TROUBLESHOOTING.md for details.\n\n` +
-          `Original error: ${error.error?.message || response.statusText}`;
-      } else if (errorMessage.includes('API key not valid') || errorMessage.includes('invalid API key')) {
-        errorMessage = `Invalid Google Vision API key. Please check your NEXT_PUBLIC_GOOGLE_VISION_API_KEY in .env file.`;
-      } else if (errorMessage.includes('quota') || errorMessage.includes('Quota')) {
-        errorMessage = `Google Vision API quota exceeded. Free tier: 1,000 requests/month.`;
-      }
-    } catch (e) {
-      errorMessage = `Google Vision API error: ${response.statusText} (Status: ${response.status})`;
-    }
-    
-    throw new Error(errorMessage);
+  if (!accessToken) {
+    throw new Error("Not authenticated");
   }
 
   const data = await response.json();
@@ -132,10 +96,12 @@ export function analysisFromVisionAnnotations(annotations: {
     ? featureVector.map((val) => val / magnitude)
     : featureVector;
 
+  const labels = Array.isArray(payload.labels) ? payload.labels : [];
+  const objects = Array.isArray(payload.objects) ? payload.objects : [];
   return {
     labels,
     objects,
-    features: normalizedFeatures,
+    features: featuresFromAnnotations(labels, objects),
   };
 }
 
@@ -253,7 +219,7 @@ export function groupSimilarImagesWithVision(
  */
 export async function processImagesWithVision(
   files: File[],
-  apiKey: string
+  accessToken: string,
 ): Promise<
   Array<{
     file: File;
@@ -264,7 +230,7 @@ export async function processImagesWithVision(
 > {
   const results = await Promise.all(
     files.map(async (file) => {
-      const analysis = await analyzeImageWithVision(file, apiKey);
+      const analysis = await analyzeImageWithVision(file, accessToken);
       return {
         file,
         features: analysis.features,
