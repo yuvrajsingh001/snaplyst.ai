@@ -38,13 +38,7 @@ export async function analyzeImageWithMeteredVision(file: File): Promise<Metered
   }
 
   if (!isAnonymousUser(session.user)) {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_VISION_API_KEY;
-    if (!apiKey || apiKey === "your_google_vision_api_key") {
-      throw new Error(
-        "Google Vision API key not configured. Set NEXT_PUBLIC_GOOGLE_VISION_API_KEY."
-      );
-    }
-    const analysis = await analyzeImageWithVision(file, apiKey);
+    const analysis = await analyzeImageWithVision(file, session.access_token);
     return { ...analysis, creditsRemaining: null };
   }
 
