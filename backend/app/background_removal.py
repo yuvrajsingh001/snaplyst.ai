@@ -164,25 +164,25 @@ async def remove_background(request: RemoveBackgroundRequest, raw_request: Reque
     try:
         from supabase import Client, create_client
         supabase: Client = create_client(supabase_url, supabase_service_key)
-        verify_caller(supabase, token, request.user_id)
+        # Auth and folder checks already ran in authorize_background_removal.
         new_path = processed_path_for_user(request.storage_path, request.user_id)
-        
+
         # Download image from Supabase Storage
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(request.image_url, timeout=60.0)
             response.raise_for_status()
             image_data = response.content
-        
+
         # Remove background using rembg
         output_bytes = remove(image_data, session=new_session('u2net'))
         result_img_pil = Image.open(BytesIO(output_bytes)).convert("RGBA")
-        
+
         # Convert to PNG bytes
         output_buffer = BytesIO()
         result_img_pil.save(output_buffer, format='PNG')
         output_buffer.seek(0)
         processed_image_bytes = output_buffer.read()
-        
+
         # Upload processed image directly to Supabase Storage.
         # Use from_() (with underscore) to avoid the Python keyword.
         # Supabase raises exceptions on error, so wrap in try-except.
@@ -200,15 +200,13 @@ async def remove_background(request: RemoveBackgroundRequest, raw_request: Reque
                 status_code=500,
                 detail=f"Failed to upload processed image: {str(upload_error)}"
             ) from upload_error
-        
+
         return {
             "processed_storage_path": new_path,
             "original_storage_path": request.storage_path,
             "credits_remaining": charge.credits_remaining,
         }
-        
-    except HTTPException:
-        raise
+
     except httpx.HTTPError as e:
         await refund_charge(charge, supabase_url=supabase_url, service_key=supabase_service_key)
         raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}")

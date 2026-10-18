@@ -11,6 +11,7 @@ import pytest
 
 from app import background_removal
 from app.background_removal import build_processed_storage_path
+from app.removal_guard import Caller, CreditCharge
 from tests.images import png_bytes
 
 REMOVE_URL = "/api/background-removal/remove"
@@ -25,6 +26,47 @@ def _payload(**overrides):
     }
     body.update(overrides)
     return body
+
+
+def _free_charge(user_id="user-1"):
+    return CreditCharge(
+        user_id=user_id,
+        is_guest=False,
+        charged=False,
+        credits_remaining=None,
+        action="background_removal",
+    )
+
+
+def _install_authorize(monkeypatch, user_id="user-1"):
+    """Skip live auth/RPC in flow tests. Guest credit behaviour is covered elsewhere."""
+
+    async def _authorize(**kwargs):
+        return _free_charge(user_id=user_id)
+
+    monkeypatch.setattr(background_removal, "authorize_background_removal", _authorize)
+
+
+def _install_batch_auth(monkeypatch, user_id="user-1"):
+    caller = Caller(id=user_id, is_anonymous=False, email="user@example.com")
+
+    async def _resolve(*args, **kwargs):
+        return caller
+
+    async def _consume(*args, **kwargs):
+        return _free_charge(user_id=user_id)
+
+    async def _refund(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(background_removal, "resolve_caller", _resolve)
+    monkeypatch.setattr(background_removal, "consume_for_action", _consume)
+    monkeypatch.setattr(background_removal, "refund_charge", _refund)
+    monkeypatch.setattr(
+        background_removal,
+        "assert_image_url_on_project",
+        lambda image_url, supabase_url: None,
+    )
 
 
 class _DownloadClient:
@@ -163,6 +205,7 @@ def test_remove_names_processed_object_and_uploads_png(
     client, monkeypatch, storage_path, expected
 ):
     _configure_env(monkeypatch)
+    _install_authorize(monkeypatch)
     _install_downloader(monkeypatch, [_Response(png_bytes())])
     _install_rembg(monkeypatch, output=png_bytes((0, 255, 0, 128)))
     fake_module, bucket = _install_supabase(monkeypatch)
@@ -195,6 +238,7 @@ def test_remove_names_processed_object_and_uploads_png(
 
 def test_remove_uses_u2net_session(client, monkeypatch):
     _configure_env(monkeypatch)
+    _install_authorize(monkeypatch)
     _install_downloader(monkeypatch, [_Response(png_bytes())])
     seen = {}
 
@@ -209,19 +253,17 @@ def test_remove_uses_u2net_session(client, monkeypatch):
 
     monkeypatch.setattr(background_removal, "new_session", _new_session)
     monkeypatch.setattr(background_removal, "remove", _remove)
-    fake_module, _bucket = _install_supabase(monkeypatch)
+    _install_supabase(monkeypatch)
 
     response = client.post(REMOVE_URL, json=_payload(), headers=_auth("session-token"))
 
     assert response.status_code == 200
     assert seen == {"model": "u2net", "session": "session", "size": len(png_bytes())}
-    fake_module.create_client.return_value.auth.get_user.assert_called_once_with(
-        "session-token"
-    )
 
 
 def test_remove_returns_400_when_download_fails(client, monkeypatch):
     _configure_env(monkeypatch)
+    _install_authorize(monkeypatch)
     _install_rembg(monkeypatch)
     _install_supabase(monkeypatch)
     request = httpx.Request("GET", "https://cdn.example/missing.jpg")
@@ -238,6 +280,7 @@ def test_remove_returns_400_when_download_fails(client, monkeypatch):
 
 def test_remove_returns_500_when_model_fails(client, monkeypatch):
     _configure_env(monkeypatch)
+    _install_authorize(monkeypatch)
     _install_downloader(monkeypatch, [_Response(png_bytes())])
     _install_rembg(monkeypatch, error=RuntimeError("model exploded"))
     _install_supabase(monkeypatch)
@@ -250,6 +293,7 @@ def test_remove_returns_500_when_model_fails(client, monkeypatch):
 
 def test_remove_returns_500_when_upload_fails(client, monkeypatch):
     _configure_env(monkeypatch)
+    _install_authorize(monkeypatch)
     _install_downloader(monkeypatch, [_Response(png_bytes())])
     _install_rembg(monkeypatch)
     _install_supabase(monkeypatch, upload_error=RuntimeError("bucket full"))
@@ -269,35 +313,17 @@ def test_processed_path_without_a_folder_has_no_leading_slash():
     )
 
 
-def test_remove_rejects_a_missing_or_invalid_session(client, monkeypatch):
+def test_remove_rejects_a_missing_session(client, monkeypatch):
     _configure_env(monkeypatch)
     _install_rembg(monkeypatch)
-    _install_supabase(monkeypatch)
     missing = client.post(REMOVE_URL, json=_payload())
     assert missing.status_code == 401
-    assert missing.json()["detail"] == "Missing bearer token"
-
-    _install_supabase(monkeypatch, auth_error=RuntimeError("jwt expired"))
-    rejected = client.post(REMOVE_URL, json=_payload(), headers=_auth("expired"))
-    assert rejected.status_code == 401
-    assert rejected.json()["detail"] == "Invalid or expired session"
-
-
-def test_remove_rejects_a_user_id_that_does_not_match_the_token(client, monkeypatch):
-    _configure_env(monkeypatch)
-    _install_rembg(monkeypatch)
-    _install_downloader(monkeypatch, [_Response(png_bytes())])
-    _fake, bucket = _install_supabase(monkeypatch, caller_id="someone-else")
-
-    response = client.post(REMOVE_URL, json=_payload(), headers=_auth())
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == "user_id does not match the authenticated user"
-    bucket.upload.assert_not_called()
+    assert missing.json()["detail"] == "Sign in required"
 
 
 def test_remove_rejects_a_storage_path_outside_the_user_folder(client, monkeypatch):
     _configure_env(monkeypatch)
+    _install_authorize(monkeypatch)
     _install_rembg(monkeypatch)
     _install_downloader(monkeypatch, [_Response(png_bytes())])
     _fake, bucket = _install_supabase(monkeypatch)
@@ -323,13 +349,15 @@ def test_remove_rejects_a_storage_path_outside_the_user_folder(client, monkeypat
 def test_batch_rejects_when_rembg_unavailable(client):
     background_removal.REMBG_AVAILABLE = False
 
-    response = client.post(BATCH_URL, json=["https://cdn.example/a.jpg"])
+    response = client.post(BATCH_URL, json=["https://cdn.example/a.jpg"], headers=_auth())
 
     assert response.status_code == 500
     assert "rembg" in response.json()["detail"]
 
 
 def test_batch_returns_per_image_success_and_failure(client, monkeypatch):
+    _configure_env(monkeypatch)
+    _install_batch_auth(monkeypatch)
     source = png_bytes()
     request = httpx.Request("GET", "https://cdn.example/bad.jpg")
     downloader = _install_downloader(
@@ -344,6 +372,7 @@ def test_batch_returns_per_image_success_and_failure(client, monkeypatch):
     response = client.post(
         BATCH_URL,
         json=["https://cdn.example/ok.jpg", "https://cdn.example/bad.jpg"],
+        headers=_auth(),
     )
 
     assert response.status_code == 200
@@ -362,9 +391,11 @@ def test_batch_returns_per_image_success_and_failure(client, monkeypatch):
 
 
 def test_batch_empty_list_returns_no_results(client, monkeypatch):
+    _configure_env(monkeypatch)
+    _install_batch_auth(monkeypatch)
     _install_rembg(monkeypatch)
 
-    response = client.post(BATCH_URL, json=[])
+    response = client.post(BATCH_URL, json=[], headers=_auth())
 
     assert response.status_code == 200
     assert response.json() == {"results": []}
