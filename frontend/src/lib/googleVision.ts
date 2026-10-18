@@ -42,8 +42,49 @@ export async function analyzeImageWithVision(
     throw new Error("Not authenticated");
   }
 
-  const data = await response.json();
-  return analysisFromVisionAnnotations(data.responses[0]);
+  const dataUrl = await fileToBase64(imageFile);
+  const content = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+
+  const response = await fetch("/api/vision", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: ["Bearer", accessToken].join(" "),
+    },
+    body: JSON.stringify({ content }),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error: unknown }).error)
+        : "Could not analyze that photo";
+    throw new Error(message);
+  }
+
+  if (payload && typeof payload === "object" && "labels" in payload && "objects" in payload) {
+    const labels = Array.isArray((payload as { labels: unknown }).labels)
+      ? ((payload as { labels: VisionLabel[] }).labels ?? [])
+      : [];
+    const objects = Array.isArray((payload as { objects: unknown }).objects)
+      ? ((payload as { objects: VisionObject[] }).objects ?? [])
+      : [];
+    return {
+      labels,
+      objects,
+      features: featuresFromAnnotations(labels, objects),
+    };
+  }
+
+  if (payload && typeof payload === "object" && "responses" in payload) {
+    const firstResponse = (payload as { responses?: unknown[] }).responses?.[0];
+    if (firstResponse && typeof firstResponse === "object") {
+      return analysisFromVisionAnnotations(firstResponse as Parameters<typeof analysisFromVisionAnnotations>[0]);
+    }
+  }
+
+  throw new Error("Could not analyze that photo");
 }
 
 type VisionLabel = { description: string; score: number };
@@ -96,12 +137,10 @@ export function analysisFromVisionAnnotations(annotations: {
     ? featureVector.map((val) => val / magnitude)
     : featureVector;
 
-  const labels = Array.isArray(payload.labels) ? payload.labels : [];
-  const objects = Array.isArray(payload.objects) ? payload.objects : [];
   return {
     labels,
     objects,
-    features: featuresFromAnnotations(labels, objects),
+    features: normalizedFeatures,
   };
 }
 
@@ -242,4 +281,3 @@ export async function processImagesWithVision(
 
   return results;
 }
-
