@@ -42,25 +42,59 @@ export async function analyzeImageWithVision(
     throw new Error("Not authenticated");
   }
 
-  const base64Image = await fileToBase64(imageFile);
-  const content = base64Image.includes(",") ? base64Image.split(",")[1] : base64Image;
-  const response = await fetch("/api/vision", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({ content }),
+  const data = await response.json();
+  return analysisFromVisionAnnotations(data.responses[0]);
+}
+
+type VisionLabel = { description: string; score: number };
+type VisionObject = { name: string; score: number };
+
+/**
+ * Turn a Cloud Vision annotate response into the feature vector the sorter uses.
+ * Shared by the browser call and the metered guest call.
+ */
+export function analysisFromVisionAnnotations(annotations: {
+  labelAnnotations?: VisionLabel[];
+  localizedObjectAnnotations?: VisionObject[];
+}): {
+  labels: VisionLabel[];
+  objects: VisionObject[];
+  features: number[];
+} {
+  // Extract labels
+  const labels =
+    annotations.labelAnnotations?.map((label) => ({
+      description: label.description,
+      score: label.score,
+    })) || [];
+
+  // Extract objects
+  const objects =
+    annotations.localizedObjectAnnotations?.map((obj) => ({
+      name: obj.name,
+      score: obj.score,
+    })) || [];
+
+  // Create feature vector from labels and objects for similarity comparison
+  // Combine label scores and object scores into a normalized vector
+  const allFeatures: { [key: string]: number } = {};
+
+  // Add label features
+  labels.forEach((label) => {
+    allFeatures[`label_${label.description.toLowerCase()}`] = label.score;
   });
 
-  const payload = (await response.json().catch(() => ({}))) as {
-    error?: string;
-    labels?: VisionLabel[];
-    objects?: VisionObject[];
-  };
-  if (!response.ok) {
-    throw new Error(payload.error || `Vision request failed (${response.status})`);
-  }
+  // Add object features
+  objects.forEach((obj) => {
+    allFeatures[`object_${obj.name.toLowerCase()}`] = obj.score;
+  });
+
+  // Convert to array (normalized feature vector)
+  const featureVector = Object.values(allFeatures);
+  const magnitude = Math.sqrt(featureVector.reduce((sum, val) => sum + val * val, 0));
+  const normalizedFeatures = magnitude > 0
+    ? featureVector.map((val) => val / magnitude)
+    : featureVector;
 
   const labels = Array.isArray(payload.labels) ? payload.labels : [];
   const objects = Array.isArray(payload.objects) ? payload.objects : [];

@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { ContinueAsGuestButton } from "@/components/guest/ContinueAsGuestButton";
+import { isAnonymousUser } from "@/lib/guestCredits";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -11,6 +13,7 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isGuestUpgrade, setIsGuestUpgrade] = useState(false);
 
   useEffect(() => {
     // Check if user is already authenticated
@@ -18,8 +21,10 @@ export default function SignupPage() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (session) {
+      if (session && !isAnonymousUser(session.user)) {
         router.push("/profile");
+      } else {
+        setIsGuestUpgrade(isAnonymousUser(session?.user));
       }
     };
     checkSession();
@@ -37,6 +42,23 @@ export default function SignupPage() {
     }
 
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (isAnonymousUser(session?.user)) {
+        const { error: upgradeError } = await supabase.auth.updateUser({
+          email,
+          password,
+        });
+        if (upgradeError) {
+          throw new Error(upgradeError.message);
+        }
+        setError("Check your email to confirm your account. Your guest photos stay with you.");
+        setIsLoading(false);
+        return;
+      }
+
       const { error: signUpError } = await supabase.auth.signUp({
         email,
         password,
@@ -58,8 +80,13 @@ export default function SignupPage() {
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
       <div className="w-full max-w-md rounded-lg bg-white p-8 shadow-lg dark:bg-zinc-900">
         <h1 className="mb-6 text-2xl font-semibold text-black dark:text-zinc-50">
-          Sign Up
+          {isGuestUpgrade ? "Save your guest session" : "Sign Up"}
         </h1>
+        {isGuestUpgrade && (
+          <p className="mb-4 text-sm text-zinc-600 dark:text-zinc-400">
+            Add an email and password to keep the photos from this guest visit.
+          </p>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label
@@ -137,6 +164,7 @@ export default function SignupPage() {
             Login
           </a>
         </p>
+        {!isGuestUpgrade && <ContinueAsGuestButton />}
       </div>
     </div>
   );

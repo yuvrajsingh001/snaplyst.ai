@@ -60,6 +60,14 @@ except Exception as import_exception:
     app.include_router(dummy_router)
 
 
+try:
+    from .guest_routes import router as guest_router
+    app.include_router(guest_router)
+    logger.info("Guest credit routes loaded")
+except Exception as guest_import_error:
+    logger.error("Failed to load guest credit routes: %s", guest_import_error, exc_info=True)
+
+
 @app.get("/health")
 def health_check():
     try:

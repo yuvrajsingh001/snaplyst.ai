@@ -1,5 +1,12 @@
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import type { ProductCore, ChannelConfig, ProductStackWithChannels } from "./types/product";
+import {
+  GuestCreditsError,
+  errorDetail,
+  guestCreditsErrorFromResponse,
+  isAnonymousUser,
+  isInsufficientCredits,
+} from "./guestCredits";
 
 /**
  * Get the current user
@@ -87,8 +94,10 @@ export async function ensureUserExists() {
   if (!existingProfile) {
     const profileData = {
       id: user.id,
-      email: user.email || "",
-      full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+      email: user.email || (isAnonymousUser(user) ? `guest-${user.id}@guest.snaplyst.invalid` : ""),
+      full_name: isAnonymousUser(user)
+        ? "Guest"
+        : user.user_metadata?.full_name || user.user_metadata?.name || null,
       created_at: user.created_at || new Date().toISOString(),
     };
 
@@ -695,20 +704,32 @@ export async function createProductImage(payload: {
   // Extract filename from storage_path if not provided
   const filename = payload.filename || payload.storage_path.split("/").pop() || "";
 
-  const { data, error } = await supabase
+  const imageRow = {
+    stack_id: payload.stack_id || null,
+    storage_path: payload.storage_path,
+    filename: filename,
+    width: payload.width || null,
+    height: payload.height || null,
+    image_hash: payload.image_hash || null,
+    processed: false,
+    metadata: payload.metadata || null,
+    owner_id: user.id,
+  };
+
+  let { data, error } = await supabase
     .from("product_images")
-    .insert({
-      stack_id: payload.stack_id || null,
-      storage_path: payload.storage_path,
-      filename: filename,
-      width: payload.width || null,
-      height: payload.height || null,
-      image_hash: payload.image_hash || null,
-      processed: false,
-      metadata: payload.metadata || null,
-    })
+    .insert(imageRow)
     .select()
     .single();
+
+  // owner_id is added by the guest-credits migration. Older databases omit it.
+  if (error && /owner_id/i.test(`${error.message} ${error.details ?? ""} ${error.hint ?? ""}`)) {
+    const { owner_id: _ownerId, ...withoutOwner } = imageRow;
+    void _ownerId;
+    const retry = await supabase.from("product_images").insert(withoutOwner).select().single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     throw new Error(error.message || "Failed to create product image");
@@ -1292,6 +1313,13 @@ export async function removeBackgroundFromImage(imageId: string | number) {
     throw new Error("Failed to get image URL");
   }
 
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    throw new Error("Sign in required");
+  }
+
   // Call backend to process and upload image directly
   const backendUrl = process.env.NEXT_PUBLIC_API_URL;
   
@@ -1324,7 +1352,7 @@ export async function removeBackgroundFromImage(imageId: string | number) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({
         image_url: urlData.publicUrl,
@@ -1351,7 +1379,12 @@ export async function removeBackgroundFromImage(imageId: string | number) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Failed to process image" }));
-    throw new Error(error.detail || `Backend returned error: ${response.status} ${response.statusText}`);
+    if (isInsufficientCredits(response.status, error)) {
+      throw guestCreditsErrorFromResponse(error);
+    }
+    throw new Error(
+      errorDetail(error, `Backend returned error: ${response.status} ${response.statusText}`)
+    );
   }
 
   // Backend returns the new storage path directly (no base64!)
@@ -1504,6 +1537,9 @@ export async function removeBackgroundFromStack(stackId: string | number) {
       await removeBackgroundFromImage(image.id);
       processed++;
     } catch (error) {
+      if (error instanceof GuestCreditsError) {
+        throw error;
+      }
       console.error(`Failed to process image ${image.id}:`, error);
       failed++;
     }
