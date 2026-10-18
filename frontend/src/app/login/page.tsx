@@ -100,7 +100,7 @@ export default function LoginPage() {
           </button>
         </form>
         <p className="mt-4 text-center text-sm text-zinc-600 dark:text-zinc-400">
-          Don't have an account?{" "}
+          {"Don't have an account?"}{" "}
           <a
             href="/signup"
             className="font-medium text-black hover:underline dark:text-zinc-50"

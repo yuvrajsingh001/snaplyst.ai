@@ -95,8 +95,12 @@ export function toShopifyRows(product: ProductForExport): Record<string, string>
     const variantPrice = variant.variantPrice?.toString() || product.price?.toString() || "";
     const variantCompareAtPrice = variant.variantCompareAtPrice?.toString() || product.compareAtPrice?.toString() || "";
     const variantSku = variant.variantSku || product.sku || "";
-    const variantGrams = variant.variantGrams?.toString() || 
-      (product.weight ? convertWeightToGrams(product.weight, product.weightUnit || "g").toString() : "");
+    const variantGrams =
+      variant.variantGrams != null
+        ? variant.variantGrams.toString()
+        : product.weight != null
+          ? convertWeightToGrams(product.weight, product.weightUnit || "g").toString()
+          : "";
     const variantWeightUnit = variant.variantWeightUnit || product.weightUnit || "g";
     const requiresShipping = variant.variantRequiresShipping !== false ? "TRUE" : "FALSE";
     const taxable = variant.variantTaxable !== false ? "TRUE" : "FALSE";

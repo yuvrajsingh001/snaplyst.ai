@@ -137,7 +137,7 @@ In Railway, go to your service → Variables tab and add:
    ```
    NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-   NEXT_PUBLIC_GOOGLE_VISION_API_KEY=your-google-vision-key
+   GOOGLE_VISION_API_KEY=your-google-vision-key
    NEXT_PUBLIC_API_URL=https://your-backend-url.com
    ```
 
@@ -173,12 +173,14 @@ The frontend already uses `process.env.NEXT_PUBLIC_API_URL` with a fallback. Mak
 **Frontend (Vercel):**
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `NEXT_PUBLIC_GOOGLE_VISION_API_KEY`
+- `GOOGLE_VISION_API_KEY` — server-only. Remove the old `NEXT_PUBLIC_GOOGLE_VISION_API_KEY` so the key is not shipped to the browser. Redeploy after the rename.
 - `NEXT_PUBLIC_API_URL` (your backend URL)
+- `MAINTENANCE_MODE` — optional
 
 **Backend (Railway/Render/etc):**
-- No required variables for basic setup
-- Add any additional configs as needed
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` — used only after the caller's Supabase JWT matches `user_id`
+- `ALLOWED_ORIGINS` — comma-separated frontend origins. `https://snaplyst-ai.vercel.app` is always allowed
 
 ## Testing Deployment
 
@@ -209,8 +211,8 @@ The frontend already uses `process.env.NEXT_PUBLIC_API_URL` with a fallback. Mak
 - Consider increasing timeout limits
 
 ### Environment Variables Not Working
-- Vercel requires `NEXT_PUBLIC_*` prefix for client-side variables
-- Redeploy after adding environment variables
+- Client-side variables need the `NEXT_PUBLIC_*` prefix. `GOOGLE_VISION_API_KEY` must stay without that prefix.
+- Redeploy after adding or renaming environment variables
 - Check Vercel dashboard → Settings → Environment Variables
 
 ### Backend Not Responding

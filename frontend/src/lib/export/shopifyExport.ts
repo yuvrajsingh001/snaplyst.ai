@@ -10,18 +10,24 @@ export async function exportShopifyCsv(products: ProductForExport[]): Promise<st
     throw new Error("No products to export");
   }
 
-  const allRows = products.flatMap(toShopifyRows);
-  
-  // Debug: Log handles to verify uniqueness
   const handles = new Set<string>();
-  allRows.forEach((row, index) => {
-    const handle = row.Handle;
-    if (handles.has(handle)) {
-      console.warn(`Duplicate handle "${handle}" found at row ${index + 1}`);
+  const allRows = products.flatMap((product) => {
+    const rows = toShopifyRows(product);
+    const handle = rows[0]?.Handle ?? "";
+    // Extra image rows and variants repeat the handle on purpose. Warn only
+    // when a second product generates the same handle.
+    if (handle && handles.has(handle)) {
+      console.warn(
+        `Duplicate handle "${handle}" for product "${product.title || product.id}"`,
+      );
+    } else if (handle) {
+      handles.add(handle);
     }
-    handles.add(handle);
+    return rows;
   });
-  console.log(`Exporting ${products.length} products as ${allRows.length} rows with ${handles.size} unique handles`);
+  console.log(
+    `Exporting ${products.length} products as ${allRows.length} rows with ${handles.size} unique handles`,
+  );
   
   const templatePath = "/templates/shopify-template.csv";
   
